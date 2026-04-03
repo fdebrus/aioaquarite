@@ -28,8 +28,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/fdebrus/hayward-ha"
-Repository = "https://github.com/fdebrus/hayward-ha"
+Homepage = "https://github.com/fdebrus/aioaquarite"
+Repository = "https://github.com/fdebrus/aioaquarite"
+Issues = "https://github.com/fdebrus/aioaquarite/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
