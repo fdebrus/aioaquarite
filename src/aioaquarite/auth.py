@@ -3,6 +3,7 @@
 import asyncio
 import datetime
 import logging
+from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
@@ -37,15 +38,16 @@ class AquariteAuth:
         self._api_key = API_KEY
         self._base_url = IDENTITY_TOOLKIT_BASE
         self._token_url = SECURETOKEN_URL
-        self.tokens: dict | None = None
+        self.tokens: dict[str, Any] | None = None
         self.expiry: datetime.datetime | None = None
         self._credentials: Credentials | None = None
         self._client: FirestoreClient | None = None
         self._lock = asyncio.Lock()
 
-    async def authenticate(self) -> dict:
+    async def authenticate(self) -> dict[str, Any]:
         """Sign in and return token information."""
         await self._signin()
+        assert self.tokens is not None
         return {
             "idToken": self.tokens["idToken"],
             "refreshToken": self.tokens["refreshToken"],
@@ -85,6 +87,7 @@ class AquariteAuth:
 
     async def refresh_token(self) -> None:
         """Refresh the access token using the refresh token."""
+        assert self.tokens is not None
         url = f"{self._token_url}?key={self._api_key}"
         headers = self._build_headers(
             "application/x-www-form-urlencoded; charset=UTF-8"
@@ -105,7 +108,7 @@ class AquariteAuth:
             if "refreshToken" in new_tokens:
                 self.tokens["refreshToken"] = new_tokens["refreshToken"]
 
-            expires_in = new_tokens.get("expiresIn")
+            expires_in: Any = new_tokens.get("expiresIn")
             try:
                 expires_in_int = int(expires_in)
             except (TypeError, ValueError) as exc:
@@ -121,9 +124,10 @@ class AquariteAuth:
 
     def _update_firestore_client(self) -> None:
         """Sync credentials to the Firestore client."""
+        assert self.tokens is not None
         if self._client is not None:
-            self._client.close()
-        self._credentials = Credentials(
+            self._client.close()  # type: ignore[no-untyped-call]
+        self._credentials = Credentials(  # type: ignore[no-untyped-call]
             token=self.tokens["idToken"],
             refresh_token=self.tokens["refreshToken"],
             token_uri=self._token_url,
@@ -134,7 +138,7 @@ class AquariteAuth:
             project=FIRESTORE_PROJECT, credentials=self._credentials
         )
 
-    async def get_client(self) -> FirestoreClient:
+    async def get_client(self) -> tuple[FirestoreClient, bool]:
         """Get the Firestore client, refreshing the token if needed.
 
         Returns the Firestore client and a boolean indicating whether
@@ -153,6 +157,7 @@ class AquariteAuth:
                 await self.refresh_token()
                 token_refreshed = True
 
+        assert self._client is not None
         return self._client, token_refreshed
 
     def is_token_expiring(self) -> bool:
@@ -165,6 +170,7 @@ class AquariteAuth:
 
     def calculate_sleep_duration(self) -> float:
         """Determine seconds until next refresh check."""
+        assert self.expiry is not None
         time_to_expiry = (
             self.expiry - datetime.datetime.now(datetime.UTC)
         ).total_seconds()
@@ -189,7 +195,7 @@ class AquariteAuth:
         return referrer or None
 
     @staticmethod
-    async def _safe_json(resp: aiohttp.ClientResponse) -> dict:
+    async def _safe_json(resp: aiohttp.ClientResponse) -> dict[str, Any]:
         try:
             data = await resp.json(content_type=None)
         except Exception:
@@ -197,7 +203,7 @@ class AquariteAuth:
         return data if isinstance(data, dict) else {}
 
     @staticmethod
-    def _format_auth_error(payload: dict, status: int) -> str:
+    def _format_auth_error(payload: dict[str, Any], status: int) -> str:
         error = payload.get("error", {})
         code = error.get("code", status)
         message = error.get("message", "Unknown error")
@@ -207,7 +213,7 @@ class AquariteAuth:
         return f"Authentication failed (code={code}, message={message})."
 
     @staticmethod
-    def _normalize_tokens(tokens: dict) -> dict:
+    def _normalize_tokens(tokens: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(tokens)
         mapping = {
             "expiresIn": ["expires_in"],

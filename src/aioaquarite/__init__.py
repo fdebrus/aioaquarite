@@ -1,5 +1,7 @@
 """Async Python client for the Hayward Aquarite pool API."""
 
+from google.cloud.firestore_v1.watch import Watch
+
 from .auth import AquariteAuth
 from .client import AquariteClient
 from .exceptions import AquariteError, AuthenticationError, CommandError, ConnectionError
@@ -11,4 +13,5 @@ __all__ = [
     "AuthenticationError",
     "CommandError",
     "ConnectionError",
+    "Watch",
 ]
