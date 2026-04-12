@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any, Callable, MutableMapping
 
 import aiohttp
+from google.cloud.firestore_v1.watch import Watch
 
 from .auth import AquariteAuth
 from .const import HAYWARD_REST_API
@@ -20,18 +21,18 @@ class AquariteClient:
 
     def __init__(self, auth: AquariteAuth) -> None:
         self._auth = auth
-        self._pool_data: dict[str, dict] = {}
+        self._pool_data: dict[str, dict[str, Any]] = {}
 
     @property
     def auth(self) -> AquariteAuth:
         """Return the auth handler."""
         return self._auth
 
-    def set_pool_data(self, pool_id: str, data: dict) -> None:
+    def set_pool_data(self, pool_id: str, data: dict[str, Any]) -> None:
         """Store current pool data (used for building command payloads)."""
         self._pool_data[pool_id] = data
 
-    def get_pool_data(self, pool_id: str) -> dict | None:
+    def get_pool_data(self, pool_id: str) -> dict[str, Any] | None:
         """Return stored pool data."""
         return self._pool_data.get(pool_id)
 
@@ -41,19 +42,20 @@ class AquariteClient:
         Returns a mapping of pool_id -> pool_name.
         """
         client, _ = await self._auth.get_client()
+        assert self._auth.tokens is not None
         user_doc = await asyncio.to_thread(
             client.collection("users")
             .document(self._auth.tokens["localId"])
             .get
         )
-        user_dict = user_doc.to_dict() or {}
+        user_dict = user_doc.to_dict() or {}  # type: ignore[union-attr]
 
         pools: dict[str, str] = {}
         for pool_id in user_dict.get("pools", []):
             pool_doc = await asyncio.to_thread(
                 client.collection("pools").document(pool_id).get
             )
-            pool_dict = pool_doc.to_dict()
+            pool_dict = pool_doc.to_dict()  # type: ignore[union-attr]
             if pool_dict:
                 name = pool_dict.get("form", {}).get("name", "Unknown")
                 if "names" in pool_dict.get("form", {}) and pool_dict["form"]["names"]:
@@ -61,19 +63,19 @@ class AquariteClient:
                 pools[pool_id] = name
         return pools
 
-    async def fetch_pool_data(self, pool_id: str) -> dict:
+    async def fetch_pool_data(self, pool_id: str) -> dict[str, Any]:
         """Fetch the full pool document from Firestore."""
         client, _ = await self._auth.get_client()
         pool_doc = await asyncio.to_thread(
             client.collection("pools").document(pool_id).get
         )
-        data = pool_doc.to_dict() or {}
+        data: dict[str, Any] = pool_doc.to_dict() or {}  # type: ignore[union-attr]
         self._pool_data[pool_id] = data
         return data
 
     async def subscribe_pool(
-        self, pool_id: str, callback: Callable[[dict], None]
-    ) -> Any:
+        self, pool_id: str, callback: Callable[[dict[str, Any]], None]
+    ) -> Watch:
         """Subscribe to real-time Firestore updates for a pool.
 
         Args:
@@ -81,24 +83,27 @@ class AquariteClient:
             callback: Called with the pool data dict on each snapshot.
 
         Returns:
-            A watch object; call ``unsubscribe()`` on it to stop listening.
+            A Watch object; call ``unsubscribe()`` on it to stop listening.
         """
         client, _ = await self._auth.get_client()
         doc_ref = client.collection("pools").document(pool_id)
 
-        def on_snapshot(doc_snapshot, changes, read_time):
+        def on_snapshot(
+            doc_snapshot: list[Any], changes: list[Any], read_time: Any
+        ) -> None:
             for doc in doc_snapshot:
-                data = doc.to_dict()
+                data: dict[str, Any] = doc.to_dict()
                 self._pool_data[pool_id] = data
                 callback(data)
 
-        watch = await asyncio.to_thread(doc_ref.on_snapshot, on_snapshot)
+        watch: Watch = await asyncio.to_thread(doc_ref.on_snapshot, on_snapshot)
         _LOGGER.debug("Firestore subscription active for %s", pool_id)
         return watch
 
     async def send_command(self, data: dict[str, Any]) -> None:
         """Send a command to the Hayward cloud REST API."""
         client, _ = await self._auth.get_client()
+        assert self._auth.tokens is not None
         headers = {"Authorization": f"Bearer {self._auth.tokens['idToken']}"}
 
         async with self._auth._session.post(
@@ -187,7 +192,7 @@ class AquariteClient:
         return {root_key: deepcopy(data.get(root_key, {}))}
 
     @staticmethod
-    def get_value(data: dict, path: str, default: Any = None) -> Any:
+    def get_value(data: dict[str, Any], path: str, default: Any = None) -> Any:
         """Get a nested value from pool data using dot-notation path."""
         if not data:
             return default
