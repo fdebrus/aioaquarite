@@ -21,6 +21,10 @@ async with aiohttp.ClientSession() as session:
     auth = AquariteAuth(session, "user@example.com", "password")
     await auth.authenticate()
 
+    # Stable Firebase UID (`sub` claim of the id token); useful as a
+    # config-entry unique_id. Returns None before authenticate() succeeds.
+    print("Firebase UID:", auth.user_id)
+
     # Create client
     client = AquariteClient(auth)
 
