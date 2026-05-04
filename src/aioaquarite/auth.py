@@ -1,7 +1,10 @@
 """Authentication for the Hayward Aquarite API via Google Identity Toolkit."""
 
 import asyncio
+import base64
+import binascii
 import datetime
+import json
 import logging
 from typing import Any
 from urllib.parse import urlparse
@@ -18,7 +21,7 @@ from .const import (
     SECURETOKEN_URL,
     TOKEN_REFRESH_BUFFER,
 )
-from .exceptions import AuthenticationError
+from .exceptions import AquariteError, AuthenticationError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +46,8 @@ class AquariteAuth:
         self._credentials: Credentials | None = None
         self._client: FirestoreClient | None = None
         self._lock = asyncio.Lock()
+        self._cached_user_id_token: str | None = None
+        self._cached_user_id: str | None = None
 
     async def authenticate(self) -> dict[str, Any]:
         """Sign in and return token information."""
@@ -167,6 +172,48 @@ class AquariteAuth:
         return datetime.datetime.now(datetime.UTC) >= (
             self.expiry - datetime.timedelta(seconds=TOKEN_REFRESH_BUFFER)
         )
+
+    @property
+    def user_id(self) -> str | None:
+        """Return the immutable Firebase UID (`sub` claim) from the id token."""
+        if self.tokens is None:
+            return None
+        id_token = self.tokens.get("idToken")
+        if not isinstance(id_token, str) or not id_token:
+            return None
+        if id_token == self._cached_user_id_token:
+            return self._cached_user_id
+        sub = self._decode_jwt_sub(id_token)
+        self._cached_user_id_token = id_token
+        self._cached_user_id = sub
+        return sub
+
+    @staticmethod
+    def _decode_jwt_sub(token: str) -> str:
+        """Decode a JWT's payload and return its `sub` claim.
+
+        Does not verify the signature — the token came from Firebase over TLS.
+        """
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise AquariteError("Malformed id token (expected 3 JWT segments).")
+        payload_segment = parts[1]
+        # urlsafe-b64 may omit padding; re-pad to a multiple of 4.
+        padding = "=" * (-len(payload_segment) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(payload_segment + padding)
+        except (binascii.Error, ValueError) as exc:
+            raise AquariteError("Malformed id token (base64 decode failed).") from exc
+        try:
+            claims = json.loads(decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AquariteError("Malformed id token (JSON decode failed).") from exc
+        if not isinstance(claims, dict):
+            raise AquariteError("Malformed id token (claims not an object).")
+        sub = claims.get("sub")
+        if not isinstance(sub, str) or not sub:
+            raise AquariteError("Malformed id token (missing `sub` claim).")
+        return sub
 
     def calculate_sleep_duration(self) -> float:
         """Determine seconds until next refresh check."""
