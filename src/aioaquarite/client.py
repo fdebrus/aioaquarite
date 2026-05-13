@@ -12,6 +12,12 @@ from google.cloud.firestore_v1.watch import Watch
 from .auth import AquariteAuth
 from .const import HAYWARD_REST_API
 from .exceptions import CommandError
+from .subscription import (
+    DEFAULT_HEALTH_CHECK_INTERVAL,
+    DEFAULT_INITIAL_BACKOFF,
+    DEFAULT_MAX_BACKOFF,
+    ResilientPoolSubscription,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +105,33 @@ class AquariteClient:
         watch: Watch = await asyncio.to_thread(doc_ref.on_snapshot, on_snapshot)
         _LOGGER.debug("Firestore subscription active for %s", pool_id)
         return watch
+
+    async def subscribe_pool_resilient(
+        self,
+        pool_id: str,
+        callback: Callable[[dict[str, Any]], None],
+        *,
+        initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
+        max_backoff: float = DEFAULT_MAX_BACKOFF,
+        health_check_interval: float | None = DEFAULT_HEALTH_CHECK_INTERVAL,
+    ) -> ResilientPoolSubscription:
+        """Subscribe to a pool with automatic token refresh and reconnect.
+
+        Returns a :class:`ResilientPoolSubscription` handle; call
+        ``await handle.aclose()`` to stop the subscription. The callback is
+        invoked from the Firestore background thread — see
+        :class:`ResilientPoolSubscription` for details.
+        """
+        sub = ResilientPoolSubscription(
+            self,
+            pool_id,
+            callback,
+            initial_backoff=initial_backoff,
+            max_backoff=max_backoff,
+            health_check_interval=health_check_interval,
+        )
+        await sub._start()
+        return sub
 
     async def send_command(self, data: dict[str, Any]) -> None:
         """Send a command to the Hayward cloud REST API."""
