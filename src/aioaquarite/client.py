@@ -9,6 +9,7 @@ from typing import Any, Callable, MutableMapping
 import aiohttp
 from google.cloud.firestore_v1.watch import Watch
 
+from ._coercion import normalise as _normalise
 from .auth import AquariteAuth
 from .const import HAYWARD_REST_API
 from .exceptions import CommandError
@@ -226,14 +227,23 @@ class AquariteClient:
 
     @staticmethod
     def get_value(data: dict[str, Any], path: str, default: Any = None) -> Any:
-        """Get a nested value from pool data using dot-notation path."""
+        """Get a nested value from pool data using dot-notation path.
+
+        Values for fields known to be numeric or boolean are normalised
+        to native Python types regardless of how the Hayward cloud
+        encoded them (e.g. ``"747"`` → ``747``, ``"1"`` → ``True``).
+        Unmapped paths are returned unchanged. Missing keys and values
+        that cannot be coerced both return ``default``; the latter also
+        logs a WARNING. See :mod:`aioaquarite._coercion` for the
+        path → type map.
+        """
         if not data:
             return default
         keys = path.split(".")
-        val = data
+        val: Any = data
         try:
             for key in keys:
                 val = val[key]
-            return val if val is not None else default
         except (KeyError, TypeError):
             return default
+        return _normalise(path, val, default)

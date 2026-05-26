@@ -1,0 +1,286 @@
+{
+  "backwash": {
+    "status": 0,
+    "interval": 180,
+    "startAt": 145630800,
+    "remainingTime": 0,
+    "frequency": 10080,
+    "mode": 1
+  },
+  "relays": {
+    "uv": {
+      "gpio": "0"
+    },
+    "ph": {
+      "base": {
+        "gpio": "0"
+      },
+      "acid": {
+        "gpio": "1"
+      }
+    },
+    "filtration": {
+      "heating": {
+        "status": 0,
+        "gpio": "7"
+      },
+      "gpio": 2
+    },
+    "backwash": {
+      "gpio": 0
+    },
+    "relay1": {
+      "name": "AUX11",
+      "info": {
+        "key": 1,
+        "from2": 64800,
+        "onoff": 0,
+        "polarity": 0,
+        "delay": 0,
+        "freq": 65536,
+        "manAutoTemp": 0,
+        "status": 0,
+        "to2": 72000,
+        "from": 0,
+        "to": 0,
+        "signal": 0,
+        "tiempoOn": 0,
+        "freq2": 86400
+      }
+    },
+    "relay3": {
+      "name": "",
+      "info": {
+        "key": 1,
+        "from2": 0,
+        "onoff": 0,
+        "polarity": 0,
+        "delay": 0,
+        "freq": 86400,
+        "manAutoTemp": 0,
+        "status": 0,
+        "to2": 0,
+        "from": 0,
+        "to": 0,
+        "signal": 0,
+        "tiempoOn": 0,
+        "freq2": 86400
+      }
+    },
+    "relay4": {
+      "name": "",
+      "info": {
+        "key": 1,
+        "from2": 0,
+        "onoff": 0,
+        "polarity": 0,
+        "to2": 0,
+        "freq": 86400,
+        "manAutoTemp": 0,
+        "status": 0,
+        "delay": 0,
+        "from": 0,
+        "to": 0,
+        "signal": 0,
+        "tiempoOn": 0,
+        "freq2": 86400
+      }
+    },
+    "rx": {
+      "gpio": "0"
+    },
+    "cd": {
+      "gpio": "0"
+    },
+    "cl": {
+      "gpio": "0"
+    },
+    "relay2": {
+      "name": "",
+      "info": {
+        "key": 1,
+        "from2": 0,
+        "onoff": 0,
+        "polarity": 0,
+        "delay": 0,
+        "freq": 86400,
+        "manAutoTemp": 0,
+        "status": 0,
+        "to2": 0,
+        "from": 46800,
+        "to": 50400,
+        "signal": 0,
+        "tiempoOn": 60,
+        "freq2": 86400
+      }
+    },
+    "light": {
+      "gpio": 3
+    },
+    "io": {
+      "gpio": "182"
+    }
+  },
+  "main": {
+    "hasPH": 1,
+    "hideFiltration": 0,
+    "hasIO": 0,
+    "LEDPulse": 0,
+    "hasRX": 1,
+    "hasUV": 0,
+    "hasWifi": 0,
+    "version": 825,
+    "hasLinked": 0,
+    "hasLinkedAuto": 0,
+    "wifiVersion": 0,
+    "hideLighting": 0,
+    "RSSI": 0,
+    "hasLCD": 0,
+    "temperature": 30.3,
+    "networkPresent": 0,
+    "hasCL": 0,
+    "hasHidro": 1,
+    "hideTemperature": 0,
+    "hasCD": 0,
+    "localTime": 1779814924,
+    "hasBackwash": 0,
+    "FWU_enabled": false,
+    "hasLED": 0,
+    "hideRelays": 0
+  },
+  "id": "TEST_POOL_ID",
+  "form": {
+    "lat": 0.0,
+    "city": "Test City",
+    "active": true,
+    "names": [
+      {
+        "user": "testuser123",
+        "name": "Pool"
+      }
+    ],
+    "zipcode": "00000",
+    "street": "Test Street, 1",
+    "name": "Home",
+    "lng": 0.0,
+    "country": "BE"
+  },
+  "present": true,
+  "light": {
+    "freq": 0,
+    "status": 0,
+    "from": 0,
+    "to": 0,
+    "mode": 0
+  },
+  "wifi": "NODE_AWS_TEST",
+  "modules": {
+    "uv": {
+      "status": 0,
+      "partial": 0,
+      "total": 0
+    },
+    "io": {
+      "status": "8192",
+      "level": 0,
+      "activation": 0
+    },
+    "cd": {
+      "status": {
+        "value": "5000"
+      },
+      "current": "0",
+      "tank": 0
+    },
+    "cl": {
+      "status": {
+        "value": "100"
+      },
+      "current": "0",
+      "pump_status": 0,
+      "tank": 0
+    },
+    "ph": {
+      "al3": 0,
+      "type": "ACID",
+      "current": "747",
+      "pump_high_on": 0,
+      "status": {
+        "high_value": "751",
+        "low_value": "650"
+      },
+      "tank": 0,
+      "pump_low_on": 0
+    },
+    "rx": {
+      "status": {
+        "value": 700
+      },
+      "current": 627,
+      "pump_status": 0,
+      "tank": 0
+    }
+  },
+  "updatedAt": 1779807791,
+  "filtration": {
+    "hasHeat": 2,
+    "heating": {
+      "tempHi": 28,
+      "clima": 1,
+      "temp": 20
+    },
+    "timerVel2": 1,
+    "status": 0,
+    "interval2": {
+      "from": 46800,
+      "to": 57600
+    },
+    "timerVel1": 1,
+    "timerVel3": 1,
+    "pumpType": 1,
+    "interval3": {
+      "from": 68400,
+      "to": 72000
+    },
+    "interval1": {
+      "from": 28800,
+      "to": 32400
+    },
+    "smart": {
+      "freeze": 1,
+      "tempHigh": 30,
+      "tempMin": 10
+    },
+    "manVel": 2,
+    "hasSmart": 1,
+    "intel": {
+      "time": "600",
+      "temp": 30
+    },
+    "mode": 4
+  },
+  "createdAt": 1599126454,
+  "hidro": {
+    "al4": 0,
+    "cover": 0,
+    "hasHidroControl": 1,
+    "temperature_value": 0,
+    "temperature_enabled": 0,
+    "cloration_enabled": 0,
+    "maxAllowedValue": 220,
+    "cover_enabled": 0,
+    "fl1": 0,
+    "level": 100,
+    "cellPartialTime": 34159856,
+    "cellTotalTime": 34052696,
+    "measure": "gr/h",
+    "control": 0,
+    "fl2": 1,
+    "is_electrolysis": true,
+    "current": 0,
+    "reduction": 0,
+    "low": 0
+  },
+  "isAWS": true,
+  "company": 2
+}
