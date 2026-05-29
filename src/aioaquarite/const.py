@@ -6,6 +6,10 @@ SECURETOKEN_URL = "https://securetoken.googleapis.com/v1/token"
 API_REFERRER = "https://hayward-europe.web.app/"
 HAYWARD_REST_API = "https://europe-west1-hayward-europe.cloudfunctions.net/"
 
+# Default timeout (seconds) for one-shot REST calls to the Hayward cloud
+# functions. The historical commands route uses the same value.
+DEFAULT_HTTP_TIMEOUT = 20
+
 FIRESTORE_PROJECT = "hayward-europe"
 
 # Token refresh buffer (seconds before expiry to trigger refresh)
