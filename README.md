@@ -42,6 +42,12 @@ async with aiohttp.ClientSession() as session:
 
     await client.set_value(pool_id, "filtration.mode", 1)
 
+    # Pull the stored sample series for a metric (~30 days, ~10-minute
+    # granularity). Each point is {"field": <value>, "seconds": <utc_unix>}.
+    # Recognised types: ph, rx, temp, cl, cd, filtration, aux1..aux4.
+    series = await client.get_pool_stats(pool_id, "ph", period=30)
+    print("pH samples:", len(series[0]))
+
     # Cleanup
     await subscription.aclose()
 ```

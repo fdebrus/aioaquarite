@@ -11,7 +11,7 @@ from google.cloud.firestore_v1.watch import Watch
 
 from ._coercion import normalise as _normalise
 from .auth import AquariteAuth
-from .const import HAYWARD_REST_API
+from .const import DEFAULT_HTTP_TIMEOUT, HAYWARD_REST_API
 from .exceptions import CommandError
 from .subscription import (
     DEFAULT_HEALTH_CHECK_INTERVAL,
@@ -133,6 +133,109 @@ class AquariteClient:
         )
         await sub._start()
         return sub
+
+    async def get_pool_stats(
+        self,
+        pool_id: str,
+        type_: str,
+        period: int,
+    ) -> list[list[dict[str, Any]]]:
+        """Fetch a stored sample series for a pool from ``/getStats``.
+
+        Hits the Hayward cloud function ``getStats`` (a Firebase Cloud
+        Function). The endpoint requires the user's Firebase id token and
+        returns whatever time-series the Aquarite backend has retained for
+        the requested metric.
+
+        Args:
+            pool_id: Pool document ID, the same value used as
+                ``uuid`` in the cloud command payload.
+            type_: Metric selector. Verified type values on firmware A50
+                (observed May 2026) are ``ph``, ``rx``, ``temp``, ``cl``,
+                ``cd``, ``filtration`` and ``aux1`` through ``aux4``. The
+                strings ``light``, ``production`` and ``salt`` also appear
+                in the web app source and may be populated on different
+                hardware variants. Unrecognised values currently return
+                HTTP 200 with timestamps but no ``field`` entries.
+            period: Required by the cloud function — requests without it
+                are rejected with HTTP 405. The Hayward backend currently
+                appears to ignore the value semantically and always returns
+                roughly the last 30 days of samples at ~10-minute
+                granularity. The web app sends ``14``; ``30`` is a safe
+                default for callers who just want the full window.
+
+        Returns:
+            The raw decoded payload — a list of series, each series being a
+            list of point dicts. A point dict has the shape
+            ``{"field": <value>, "seconds": <utc_unix>}`` for recognised
+            metric types; the ``field`` key may be absent if the device
+            had no value to report (or the type is unknown to the
+            backend). The outer list typically contains a single series.
+
+            Field encodings observed:
+              - ``ph``: integer pH × 100 (``885`` → 8.85).
+              - ``rx``: ORP in millivolts (integer).
+              - ``temp``: water temperature in °C (float).
+              - ``cl`` / ``cd``: probe reading; ``0`` when no probe is
+                fitted.
+              - ``filtration`` / ``aux1`` ... ``aux4``: ``0`` / ``1`` for
+                off / on.
+
+        Raises:
+            CommandError: If the cloud function returns a non-2xx status.
+            RuntimeError: If called before :meth:`AquariteAuth.authenticate`.
+        """
+        if self._auth.tokens is None:
+            raise RuntimeError(
+                "Not authenticated; call AquariteAuth.authenticate() first."
+            )
+        headers = {
+            "Authorization": f"Bearer {self._auth.tokens['idToken']}",
+            "Content-Type": "application/json",
+        }
+        body: dict[str, Any] = {"uuid": pool_id, "type": type_, "period": period}
+        async with self._auth._session.post(
+            f"{HAYWARD_REST_API}getStats",
+            json=body,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
+        ) as response:
+            _LOGGER.debug(
+                "getStats pool_id=%s type=%s period=%s -> %s",
+                pool_id,
+                type_,
+                period,
+                response.status,
+            )
+            if response.status >= 400:
+                raise CommandError(
+                    f"getStats failed with status {response.status}"
+                )
+            data: list[list[dict[str, Any]]] = await response.json()
+            return data
+
+    async def get_server_date(self) -> dict[str, Any]:
+        """Fetch the cloud function's current date from ``/getServerDate``.
+
+        Useful for sanity-checking clock drift between the local host and
+        the Hayward backend. The endpoint is unauthenticated. The cloud
+        function returns ``{"date": "YYMMDD"}`` (e.g. ``"260529"`` for
+        29 May 2026) — exact shape preserved.
+
+        Raises:
+            CommandError: If the cloud function returns a non-2xx status.
+        """
+        async with self._auth._session.get(
+            f"{HAYWARD_REST_API}getServerDate",
+            timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
+        ) as response:
+            _LOGGER.debug("getServerDate -> %s", response.status)
+            if response.status >= 400:
+                raise CommandError(
+                    f"getServerDate failed with status {response.status}"
+                )
+            data: dict[str, Any] = await response.json()
+            return data
 
     async def send_command(self, data: dict[str, Any]) -> None:
         """Send a command to the Hayward cloud REST API."""
