@@ -12,7 +12,7 @@ from google.cloud.firestore_v1.watch import Watch
 from ._coercion import normalise as _normalise
 from .auth import AquariteAuth
 from .const import HAYWARD_REST_API
-from .exceptions import CommandError
+from .exceptions import CommandError, ConnectionError
 from .subscription import (
     DEFAULT_HEALTH_CHECK_INTERVAL,
     DEFAULT_INITIAL_BACKOFF,
@@ -136,21 +136,35 @@ class AquariteClient:
 
     async def send_command(self, data: dict[str, Any]) -> None:
         """Send a command to the Hayward cloud REST API."""
-        client, _ = await self._auth.get_client()
+        try:
+            client, _ = await self._auth.get_client()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise ConnectionError(
+                f"Auth client refresh failed: {err}"
+            ) from err
         assert self._auth.tokens is not None
         headers = {"Authorization": f"Bearer {self._auth.tokens['idToken']}"}
 
-        async with self._auth._session.post(
-            f"{HAYWARD_REST_API}/sendPoolCommand",
-            json=data,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=20),
-        ) as response:
-            _LOGGER.debug("Command sent. Status: %s", response.status)
-            if response.status >= 400:
-                raise CommandError(
-                    f"Command failed with status {response.status}"
-                )
+        try:
+            async with self._auth._session.post(
+                f"{HAYWARD_REST_API}/sendPoolCommand",
+                json=data,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as response:
+                _LOGGER.debug("Command sent. Status: %s", response.status)
+                if response.status >= 400:
+                    raise CommandError(
+                        f"Command failed with status {response.status}"
+                    )
+        except aiohttp.ClientError as err:
+            raise ConnectionError(
+                f"HTTP transport error: {err}"
+            ) from err
+        except asyncio.TimeoutError as err:
+            raise ConnectionError(
+                f"Request timed out: {err}"
+            ) from err
 
     async def set_value(
         self, pool_id: str, value_path: str, value: Any

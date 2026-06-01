@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1
+
+### Fixed
+- Wrap `aiohttp.ClientError` and `asyncio.TimeoutError` from both
+  `send_command`'s REST POST and the upstream `_auth.get_client()` refresh in
+  `ConnectionError` (an `AquariteError` subclass), so transport failures
+  surface as the library's documented domain error rather than leaking aiohttp
+  internals to callers.
+
 ## 0.5.0
 
 ### Added
