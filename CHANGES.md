@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0
+## 0.6.1
 
 ### Added
 - `AquariteClient.subscribe_user_pools(callback)` — push-based
