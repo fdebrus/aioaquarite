@@ -1,13 +1,26 @@
 # Changelog
 
-## 0.5.1
+## 0.6.0
 
-### Fixed
-- Wrap `aiohttp.ClientError` and `asyncio.TimeoutError` from both
-  `send_command`'s REST POST and the upstream `_auth.get_client()` refresh in
-  `ConnectionError` (an `AquariteError` subclass), so transport failures
-  surface as the library's documented domain error rather than leaking aiohttp
-  internals to callers.
+### Added
+- `AquariteClient.subscribe_user_pools(callback)` — push-based
+  subscription on the `users/{uid}` Firestore document. The callback
+  receives the current `list[str]` of pool IDs every time the user
+  document changes, so consumers can detect pool additions or removals
+  in the Hayward app without polling `get_pools()` on a timer.
+- `AquariteClient.subscribe_user_pools_resilient(callback, *, ...)` —
+  same payload, wrapped with the existing supervisor (token-refresh
+  resubscribe, exponential backoff, idempotent `aclose()`). Returns a
+  `ResilientUserPoolsSubscription` handle.
+- `ResilientUserPoolsSubscription`, exported from `aioaquarite`.
+
+### Changed
+- The supervisor logic in `ResilientPoolSubscription` is now lifted
+  into a private `_ResilientSubscription` base class so the new
+  user-pools variant doesn't duplicate ~50 lines of reconnect/refresh
+  bookkeeping. The public surface of `ResilientPoolSubscription` is
+  unchanged (constructor signature, `pool_id` property, `aclose()`
+  semantics, log behaviour).
 
 ## 0.5.0
 
