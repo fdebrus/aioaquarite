@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aioaquarite"
-version = "0.6.0"
+version = "0.6.1"
 description = "Async Python client for the Hayward Aquarite pool API"
 readme = "README.md"
 license = "MIT"
