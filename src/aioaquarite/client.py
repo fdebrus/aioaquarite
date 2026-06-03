@@ -18,6 +18,7 @@ from .subscription import (
     DEFAULT_INITIAL_BACKOFF,
     DEFAULT_MAX_BACKOFF,
     ResilientPoolSubscription,
+    ResilientUserPoolsSubscription,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -126,6 +127,61 @@ class AquariteClient:
         sub = ResilientPoolSubscription(
             self,
             pool_id,
+            callback,
+            initial_backoff=initial_backoff,
+            max_backoff=max_backoff,
+            health_check_interval=health_check_interval,
+        )
+        await sub._start()
+        return sub
+
+    async def subscribe_user_pools(
+        self, callback: Callable[[list[str]], None]
+    ) -> Watch:
+        """Subscribe to the user document's ``pools`` list.
+
+        The callback receives the current ``list[str]`` of pool IDs every
+        time ``users/{uid}`` changes. Use this to detect pool additions
+        or removals in the Hayward app without polling
+        :meth:`get_pools`.
+
+        Returns a Watch object; call ``unsubscribe()`` on it to stop
+        listening. The callback runs on the Firestore background thread.
+        """
+        client, _ = await self._auth.get_client()
+        assert self._auth.tokens is not None
+        doc_ref = client.collection("users").document(
+            self._auth.tokens["localId"]
+        )
+
+        def on_snapshot(
+            doc_snapshot: list[Any], changes: list[Any], read_time: Any
+        ) -> None:
+            for doc in doc_snapshot:
+                data: dict[str, Any] = doc.to_dict() or {}
+                callback(list(data.get("pools", [])))
+
+        watch: Watch = await asyncio.to_thread(doc_ref.on_snapshot, on_snapshot)
+        _LOGGER.debug("Firestore user-pools subscription active")
+        return watch
+
+    async def subscribe_user_pools_resilient(
+        self,
+        callback: Callable[[list[str]], None],
+        *,
+        initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
+        max_backoff: float = DEFAULT_MAX_BACKOFF,
+        health_check_interval: float | None = DEFAULT_HEALTH_CHECK_INTERVAL,
+    ) -> ResilientUserPoolsSubscription:
+        """Subscribe to the user's pool list with token refresh and reconnect.
+
+        Returns a :class:`ResilientUserPoolsSubscription` handle; call
+        ``await handle.aclose()`` to stop the subscription. The callback
+        runs on the Firestore background thread — see
+        :class:`ResilientUserPoolsSubscription` for details.
+        """
+        sub = ResilientUserPoolsSubscription(
+            self,
             callback,
             initial_backoff=initial_backoff,
             max_backoff=max_backoff,
