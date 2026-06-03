@@ -1,6 +1,7 @@
-"""Resilient pool subscription that owns token refresh and reconnect.
+"""Resilient Firestore subscriptions that own token refresh and reconnect.
 
-Wraps :meth:`AquariteClient.subscribe_pool` with a supervisor task that:
+Wraps the low-level ``subscribe_*`` methods on :class:`AquariteClient`
+with a supervisor task that:
 
 * refreshes the auth token before it expires and resubscribes the watch
   when a new token is minted,
@@ -9,17 +10,19 @@ Wraps :meth:`AquariteClient.subscribe_pool` with a supervisor task that:
 * applies exponential backoff (default 10s → 600s) between reconnect
   attempts and resets the delay on success.
 
-The user callback is invoked from the Firestore background thread (same
-threading model as :meth:`AquariteClient.subscribe_pool`). Callers running
-on an asyncio loop should hand data back via ``loop.call_soon_threadsafe``.
+User callbacks are invoked from the Firestore background thread (same
+threading model as the underlying ``subscribe_*`` methods). Callers
+running on an asyncio loop should hand data back via
+``loop.call_soon_threadsafe``.
 """
 
 from __future__ import annotations
 
+import abc
 import asyncio
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 if TYPE_CHECKING:
     from google.cloud.firestore_v1.watch import Watch
@@ -32,22 +35,26 @@ DEFAULT_INITIAL_BACKOFF = 10.0
 DEFAULT_MAX_BACKOFF = 600.0
 DEFAULT_HEALTH_CHECK_INTERVAL = 60.0
 
+T = TypeVar("T")
 
-class ResilientPoolSubscription:
-    """A pool subscription that auto-refreshes tokens and reconnects."""
+
+class _ResilientSubscription(abc.ABC, Generic[T]):
+    """Supervisor shared by all resilient ``subscribe_*`` wrappers.
+
+    Subclasses provide the actual subscribe call and a short label used
+    for log lines and the supervisor task name.
+    """
 
     def __init__(
         self,
         client: AquariteClient,
-        pool_id: str,
-        callback: Callable[[dict[str, Any]], None],
+        callback: Callable[[T], None],
         *,
         initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
         health_check_interval: float | None = DEFAULT_HEALTH_CHECK_INTERVAL,
     ) -> None:
         self._client = client
-        self._pool_id = pool_id
         self._callback = callback
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
@@ -58,24 +65,26 @@ class ResilientPoolSubscription:
         self._closed = False
 
     @property
-    def pool_id(self) -> str:
-        """The pool document ID this subscription is bound to."""
-        return self._pool_id
+    @abc.abstractmethod
+    def _label(self) -> str:
+        """Short identifier used in log lines and the task name."""
+
+    @abc.abstractmethod
+    async def _subscribe_call(self) -> Watch:
+        """Invoke the underlying ``AquariteClient.subscribe_*`` method."""
 
     async def _start(self) -> None:
         """Perform the initial subscribe and launch the supervisor."""
         await self._do_subscribe()
         self._task = asyncio.create_task(
-            self._supervise(), name=f"aioaquarite-sub-{self._pool_id}"
+            self._supervise(), name=f"aioaquarite-sub-{self._label}"
         )
 
     async def _do_subscribe(self) -> None:
         async with self._lock:
             if self._closed:
                 return
-            self._watch = await self._client.subscribe_pool(
-                self._pool_id, self._callback
-            )
+            self._watch = await self._subscribe_call()
 
     async def _do_unsubscribe(self) -> None:
         async with self._lock:
@@ -85,9 +94,7 @@ class ResilientPoolSubscription:
             await asyncio.to_thread(watch.unsubscribe)
 
     async def _resubscribe(self, reason: str) -> None:
-        _LOGGER.debug(
-            "Resubscribing pool %s (reason: %s)", self._pool_id, reason
-        )
+        _LOGGER.debug("Resubscribing %s (reason: %s)", self._label, reason)
         await self._do_unsubscribe()
         await self._do_subscribe()
 
@@ -107,7 +114,7 @@ class ResilientPoolSubscription:
 
                 if auth.is_token_expiring():
                     _LOGGER.debug(
-                        "Token expiring, refreshing (pool %s)", self._pool_id
+                        "Token expiring, refreshing (%s)", self._label
                     )
                 _, refreshed = await auth.get_client()
                 if refreshed:
@@ -117,8 +124,8 @@ class ResilientPoolSubscription:
                 raise
             except Exception as err:  # noqa: BLE001 — match HA's broad catch
                 _LOGGER.warning(
-                    "Pool %s connection issue: %s; reconnecting in %.1fs",
-                    self._pool_id,
+                    "%s connection issue: %s; reconnecting in %.1fs",
+                    self._label,
                     err,
                     backoff,
                 )
@@ -130,8 +137,8 @@ class ResilientPoolSubscription:
                     raise
                 except Exception as err2:  # noqa: BLE001
                     _LOGGER.warning(
-                        "Pool %s reconnect failed: %s; will retry",
-                        self._pool_id,
+                        "%s reconnect failed: %s; will retry",
+                        self._label,
                         err2,
                     )
                     backoff = min(backoff * 2, self._max_backoff)
@@ -148,3 +155,54 @@ class ResilientPoolSubscription:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await self._do_unsubscribe()
+
+
+class ResilientPoolSubscription(_ResilientSubscription[dict[str, Any]]):
+    """A pool subscription that auto-refreshes tokens and reconnects."""
+
+    def __init__(
+        self,
+        client: AquariteClient,
+        pool_id: str,
+        callback: Callable[[dict[str, Any]], None],
+        *,
+        initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
+        max_backoff: float = DEFAULT_MAX_BACKOFF,
+        health_check_interval: float | None = DEFAULT_HEALTH_CHECK_INTERVAL,
+    ) -> None:
+        super().__init__(
+            client,
+            callback,
+            initial_backoff=initial_backoff,
+            max_backoff=max_backoff,
+            health_check_interval=health_check_interval,
+        )
+        self._pool_id = pool_id
+
+    @property
+    def pool_id(self) -> str:
+        """The pool document ID this subscription is bound to."""
+        return self._pool_id
+
+    @property
+    def _label(self) -> str:
+        return f"pool {self._pool_id}"
+
+    async def _subscribe_call(self) -> Watch:
+        return await self._client.subscribe_pool(self._pool_id, self._callback)
+
+
+class ResilientUserPoolsSubscription(_ResilientSubscription[list[str]]):
+    """A subscription to the ``users/{uid}.pools`` list.
+
+    The callback receives the current ``list[str]`` of pool IDs every
+    time the user document changes. Useful for noticing pool additions
+    or removals without polling :meth:`AquariteClient.get_pools`.
+    """
+
+    @property
+    def _label(self) -> str:
+        return "user pools"
+
+    async def _subscribe_call(self) -> Watch:
+        return await self._client.subscribe_user_pools(self._callback)

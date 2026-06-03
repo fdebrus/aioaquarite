@@ -5,7 +5,7 @@ from google.cloud.firestore_v1.watch import Watch
 from .auth import AquariteAuth
 from .client import AquariteClient
 from .exceptions import AquariteError, AuthenticationError, CommandError, ConnectionError
-from .subscription import ResilientPoolSubscription
+from .subscription import ResilientPoolSubscription, ResilientUserPoolsSubscription
 
 __all__ = [
     "AquariteAuth",
@@ -15,5 +15,6 @@ __all__ = [
     "CommandError",
     "ConnectionError",
     "ResilientPoolSubscription",
+    "ResilientUserPoolsSubscription",
     "Watch",
 ]
