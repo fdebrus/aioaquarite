@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+- `AquariteClient.get_pool_stats(pool_id, type_, period)` calls the
+  Hayward `getStats` cloud function and returns the stored sample series
+  for a metric (`ph`, `rx`, `temp`, `cl`, `cd`, `filtration`, `aux1`-`aux4`,
+  and the hardware-conditional `light` / `production` / `salt`).
+  Returns the raw decoded payload — a list of series, each series a
+  list of `{"field": <value>, "seconds": <utc_unix>}` dicts. `period`
+  is required by the cloud function (requests without it are rejected
+  with HTTP 405) but appears to be ignored semantically — the response
+  covers ~30 days regardless of the value passed. Field encodings are
+  documented on the method docstring.
+- `AquariteClient.get_server_date()` calls the unauthenticated
+  `getServerDate` cloud function and returns `{"date": "YYMMDD"}` — handy
+  for clock-drift checks against the Hayward backend.
+- `aioaquarite.const.DEFAULT_HTTP_TIMEOUT` (`20` seconds) so the new
+  helpers and any future REST calls share one knob.
+
+### Changed
+- `get_pool_stats` now refreshes the auth token via
+  `AquariteAuth.get_client()` before building its request headers,
+  matching every other authenticated method (`send_command`,
+  `get_pools`, `fetch_pool_data`, `subscribe_pool`). It previously read
+  `self._auth.tokens['idToken']` directly, so a token that aged past
+  expiry mid-session would send a stale token and surface as an
+  intermittent `CommandError` instead of transparently refreshing.
+- `get_pool_stats` and `get_server_date` now wrap `aiohttp.ClientError`
+  and `asyncio.TimeoutError` into `ConnectionError`, matching
+  `send_command`'s error contract, so callers only ever need to catch
+  `AquariteError` (and subclasses) for transport failures.
+
+Original endpoint reverse-engineering and tests by @aeddi (#6).
+
 ## 0.7.0
 
 ### Added

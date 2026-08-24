@@ -238,37 +238,44 @@ class AquariteClient:
                 off / on.
 
         Raises:
+            ConnectionError: On a transport failure or timeout, including
+                during the auth token refresh.
             CommandError: If the cloud function returns a non-2xx status.
-            RuntimeError: If called before :meth:`AquariteAuth.authenticate`.
         """
-        if self._auth.tokens is None:
-            raise RuntimeError(
-                "Not authenticated; call AquariteAuth.authenticate() first."
-            )
+        try:
+            client, _ = await self._auth.get_client()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise ConnectionError(f"Auth client refresh failed: {err}") from err
+        assert self._auth.tokens is not None
         headers = {
             "Authorization": f"Bearer {self._auth.tokens['idToken']}",
             "Content-Type": "application/json",
         }
         body: dict[str, Any] = {"uuid": pool_id, "type": type_, "period": period}
-        async with self._auth._session.post(
-            f"{HAYWARD_REST_API}getStats",
-            json=body,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
-        ) as response:
-            _LOGGER.debug(
-                "getStats pool_id=%s type=%s period=%s -> %s",
-                pool_id,
-                type_,
-                period,
-                response.status,
-            )
-            if response.status >= 400:
-                raise CommandError(
-                    f"getStats failed with status {response.status}"
+        try:
+            async with self._auth._session.post(
+                f"{HAYWARD_REST_API}getStats",
+                json=body,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
+            ) as response:
+                _LOGGER.debug(
+                    "getStats pool_id=%s type=%s period=%s -> %s",
+                    pool_id,
+                    type_,
+                    period,
+                    response.status,
                 )
-            data: list[list[dict[str, Any]]] = await response.json()
-            return data
+                if response.status >= 400:
+                    raise CommandError(
+                        f"getStats failed with status {response.status}"
+                    )
+                data: list[list[dict[str, Any]]] = await response.json()
+                return data
+        except aiohttp.ClientError as err:
+            raise ConnectionError(f"HTTP transport error: {err}") from err
+        except asyncio.TimeoutError as err:
+            raise ConnectionError(f"Request timed out: {err}") from err
 
     async def get_server_date(self) -> dict[str, Any]:
         """Fetch the cloud function's current date from ``/getServerDate``.
@@ -279,19 +286,25 @@ class AquariteClient:
         29 May 2026) — exact shape preserved.
 
         Raises:
+            ConnectionError: On a transport failure or timeout.
             CommandError: If the cloud function returns a non-2xx status.
         """
-        async with self._auth._session.get(
-            f"{HAYWARD_REST_API}getServerDate",
-            timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
-        ) as response:
-            _LOGGER.debug("getServerDate -> %s", response.status)
-            if response.status >= 400:
-                raise CommandError(
-                    f"getServerDate failed with status {response.status}"
-                )
-            data: dict[str, Any] = await response.json()
-            return data
+        try:
+            async with self._auth._session.get(
+                f"{HAYWARD_REST_API}getServerDate",
+                timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
+            ) as response:
+                _LOGGER.debug("getServerDate -> %s", response.status)
+                if response.status >= 400:
+                    raise CommandError(
+                        f"getServerDate failed with status {response.status}"
+                    )
+                data: dict[str, Any] = await response.json()
+                return data
+        except aiohttp.ClientError as err:
+            raise ConnectionError(f"HTTP transport error: {err}") from err
+        except asyncio.TimeoutError as err:
+            raise ConnectionError(f"Request timed out: {err}") from err
 
     async def send_command(self, data: dict[str, Any]) -> None:
         """Send a command to the Hayward cloud REST API."""

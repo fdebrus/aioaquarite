@@ -4,17 +4,15 @@ get_server_date."""
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 
-from aioaquarite.auth import AquariteAuth
 from aioaquarite.client import AquariteClient
 from aioaquarite.const import HAYWARD_REST_API
-from aioaquarite.exceptions import CommandError
+from aioaquarite.exceptions import CommandError, ConnectionError
 
 
 # ── fakes ──────────────────────────────────────────────────────────────
@@ -43,10 +41,14 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    """Captures the POST/GET call args and returns a canned response."""
+    """Captures the POST/GET call args and returns a canned response, or
+    raises a canned transport error if one was configured."""
 
-    def __init__(self, response: _FakeResponse) -> None:
+    def __init__(
+        self, response: _FakeResponse, *, raise_error: Exception | None = None
+    ) -> None:
         self._response = response
+        self._raise_error = raise_error
         # Recorded args for assertions:
         self.post_calls: list[dict[str, Any]] = []
         self.get_calls: list[dict[str, Any]] = []
@@ -59,6 +61,8 @@ class _FakeSession:
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> _FakeResponse:
+        if self._raise_error is not None:
+            raise self._raise_error
         self.post_calls.append(
             {"url": url, "json": json, "headers": headers, "timeout": timeout}
         )
@@ -70,17 +74,27 @@ class _FakeSession:
         *,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> _FakeResponse:
+        if self._raise_error is not None:
+            raise self._raise_error
         self.get_calls.append({"url": url, "timeout": timeout})
         return self._response
 
 
-def _make_auth(session: Any, *, with_token: bool = True) -> AquariteAuth:
-    """Build an AquariteAuth wrapping a fake session, optionally
-    pre-populated with a token so request-side tests can run without
-    going through the live sign-in flow."""
-    auth = AquariteAuth(session, "user@example.com", "hunter2")
-    if with_token:
-        auth.tokens = {"idToken": "fake-id-token", "refreshToken": "rt", "expiresIn": "3600"}
+def _make_auth(session: Any, *, with_token: bool = True) -> Any:
+    """Build an auth double wrapping a fake session.
+
+    ``get_client()`` is mocked directly (matching how the other
+    authenticated methods on ``AquariteClient`` are exercised) so tests
+    don't need to drive the real sign-in flow.
+    """
+    auth = MagicMock()
+    auth._session = session
+    auth.get_client = AsyncMock(return_value=(MagicMock(), False))
+    auth.tokens = (
+        {"idToken": "fake-id-token", "refreshToken": "rt", "expiresIn": "3600"}
+        if with_token
+        else None
+    )
     return auth
 
 
@@ -121,6 +135,25 @@ def test_get_pool_stats_posts_expected_payload_and_returns_decoded() -> None:
     asyncio.run(_run())
 
 
+def test_get_pool_stats_refreshes_auth_before_request() -> None:
+    """get_pool_stats goes through the same auth-refresh path as
+    send_command, get_pools, etc. (await self._auth.get_client()) instead
+    of reading self._auth.tokens directly, so a token nearing expiry is
+    refreshed transparently instead of sending a stale one."""
+
+    async def _run() -> None:
+        response = _FakeResponse(status=200, payload=SAMPLE_PH_PAYLOAD)
+        session = _FakeSession(response)
+        auth = _make_auth(session)
+        client = AquariteClient(auth)
+
+        await client.get_pool_stats("pool-uuid-1", "ph", 30)
+
+        auth.get_client.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
 def test_get_pool_stats_raises_command_error_on_http_error() -> None:
     async def _run() -> None:
         response = _FakeResponse(status=500, payload=None)
@@ -134,17 +167,16 @@ def test_get_pool_stats_raises_command_error_on_http_error() -> None:
     asyncio.run(_run())
 
 
-def test_get_pool_stats_raises_runtime_error_when_unauthenticated() -> None:
+def test_get_pool_stats_wraps_transport_error_in_connection_error() -> None:
     async def _run() -> None:
-        session = _FakeSession(_FakeResponse(status=200, payload=[[]]))
-        auth = _make_auth(session, with_token=False)
+        session = _FakeSession(
+            _FakeResponse(), raise_error=aiohttp.ClientConnectionError("boom")
+        )
+        auth = _make_auth(session)
         client = AquariteClient(auth)
 
-        with pytest.raises(RuntimeError, match="authenticate"):
+        with pytest.raises(ConnectionError):
             await client.get_pool_stats("pool-uuid-1", "ph", 30)
-
-        # Pre-check failed before the network was touched.
-        assert session.post_calls == []
 
     asyncio.run(_run())
 
@@ -198,6 +230,20 @@ def test_get_server_date_raises_on_http_error() -> None:
         client = AquariteClient(auth)
 
         with pytest.raises(CommandError, match="503"):
+            await client.get_server_date()
+
+    asyncio.run(_run())
+
+
+def test_get_server_date_wraps_transport_error_in_connection_error() -> None:
+    async def _run() -> None:
+        session = _FakeSession(
+            _FakeResponse(), raise_error=aiohttp.ClientConnectionError("boom")
+        )
+        auth = _make_auth(session, with_token=False)
+        client = AquariteClient(auth)
+
+        with pytest.raises(ConnectionError):
             await client.get_server_date()
 
     asyncio.run(_run())
