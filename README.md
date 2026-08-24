@@ -1,9 +1,15 @@
 # aioaquarite
 
-[![PyPI](https://img.shields.io/pypi/v/aioaquarite)](https://pypi.org/project/aioaquarite/)
-[![Python versions](https://img.shields.io/pypi/pyversions/aioaquarite)](https://pypi.org/project/aioaquarite/)
-[![Tests](https://github.com/fdebrus/aioaquarite/actions/workflows/tests.yml/badge.svg)](https://github.com/fdebrus/aioaquarite/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+<p align="left">
+  <a href="https://www.buymeacoffee.com/fdebrus"><img src="https://img.shields.io/badge/Support-Buy%20Me%20a%20Coffee-FFDD00?style=flat&logo=buymeacoffee" alt="Buy Me a Coffee"></a>
+  <a href="https://pypi.org/project/aioaquarite/"><img src="https://img.shields.io/pypi/v/aioaquarite?style=flat&label=PyPI" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/aioaquarite/"><img src="https://img.shields.io/pypi/pyversions/aioaquarite?style=flat&label=Python" alt="Python versions"></a>
+  <a href="https://github.com/fdebrus/aioaquarite/actions/workflows/tests.yml"><img src="https://github.com/fdebrus/aioaquarite/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/fdebrus/aioaquarite"><img src="https://img.shields.io/badge/Maintained%20by-fdebrus-green?style=flat" alt="Maintainer"></a>
+  <a href="https://github.com/fdebrus/aioaquarite/issues"><img src="https://img.shields.io/github/issues/fdebrus/aioaquarite?style=flat&label=Issues" alt="Open issues"></a>
+  <a href="https://github.com/fdebrus/aioaquarite/stargazers"><img src="https://img.shields.io/github/stars/fdebrus/aioaquarite?style=flat&label=Stars" alt="GitHub stars"></a>
+</p>
 
 Async Python client for the Hayward Aquarite pool API.
 
