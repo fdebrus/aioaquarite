@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+- `AquariteClient.set_values(pool_id, updates)` — write several values
+  of one command branch as a single cloud command. All paths must share
+  the same command branch (same top-level key, and same second-level
+  key for deep 4+ segment paths); mixing branches raises `ValueError`.
+  This is the primitive needed for writes that must land atomically,
+  such as a light mode + status pair.
+
+### Changed
+- `set_value` is now a thin wrapper over `set_values`.
+- On a successful send, `set_value`/`set_values` now mirror the written
+  values into the stored pool data. Previously the stored document only
+  refreshed on the next Firestore snapshot, so two quick writes to the
+  same branch built the second payload from a stale document and
+  silently reverted the first write.
+
 ## 0.6.1
 
 ### Added

@@ -225,31 +225,50 @@ class AquariteClient:
     async def set_value(
         self, pool_id: str, value_path: str, value: Any
     ) -> None:
-        """Set a value on the pool device via REST API.
+        """Set a single value on the pool device via REST API.
 
-        Uses stored pool data to build the minimal change payload.
+        Thin wrapper over :meth:`set_values`.
         """
+        await self.set_values(pool_id, {value_path: value})
+
+    async def set_values(
+        self, pool_id: str, updates: dict[str, Any]
+    ) -> None:
+        """Set several values of one command branch as a single command.
+
+        The command payload carries the whole branch rebuilt from the
+        stored pool data, so all paths must resolve to the same branch:
+        the same top-level key and, for deep paths (4+ segments), the
+        same second-level key. Mixing branches raises ``ValueError``.
+
+        On success the stored pool data is updated to match, so a
+        subsequent command builds its payload on the new state instead
+        of a snapshot-stale one (which would silently revert it).
+        """
+        if not updates:
+            raise ValueError("updates must not be empty")
+        signatures = {self._branch_signature(path) for path in updates}
+        if len(signatures) != 1:
+            raise ValueError(
+                "updates must target a single command branch, got "
+                f"{sorted(signatures)}"
+            )
+
         pool_data = self._pool_data.get(pool_id)
         if not pool_data:
             raise RuntimeError("Pool data not available; fetch data first.")
 
-        current_config = self._extract_branch(pool_data, value_path)
-        _LOGGER.debug(
-            "set_value BEFORE: path=%s current_data=%s",
-            value_path,
-            json.dumps(current_config, indent=2, default=str),
-        )
-        self._set_in_dict(current_config, value_path, value)
+        current_config = self._extract_branch(pool_data, next(iter(updates)))
 
-        if value_path == "hidro.cloration_enabled":
-            hidro = current_config.get("hidro", {})
-            hidro.update(
-                {
-                    "cloration_enabled": 1 if value else 0,
-                    "reduction": 1 if value else 0,
-                    "disable": 1,
-                }
-            )
+        effective = dict(updates)
+        if "hidro.cloration_enabled" in effective:
+            enabled = effective["hidro.cloration_enabled"]
+            effective["hidro.cloration_enabled"] = 1 if enabled else 0
+            effective["hidro.reduction"] = 1 if enabled else 0
+            effective["hidro.disable"] = 1
+
+        for path, value in effective.items():
+            self._set_in_dict(current_config, path, value)
 
         payload = {
             "gateway": pool_data.get("wifi"),
@@ -259,14 +278,31 @@ class AquariteClient:
             "source": "web",
         }
         _LOGGER.debug(
-            "set_value path=%s value=%s changes=%s",
-            value_path,
-            value,
-            json.dumps(current_config, indent=2),
+            "set_values updates=%s changes=%s",
+            effective,
+            json.dumps(current_config, indent=2, default=str),
         )
         await self.send_command(payload)
 
+        # Mirror the accepted changes into the stored pool data so the
+        # next command payload is built from the state the cloud now has.
+        for path, value in effective.items():
+            self._set_in_dict(pool_data, path, value)
+
     # ── helpers ──────────────────────────────────────────────
+
+    @staticmethod
+    def _branch_signature(path: str) -> tuple[str, ...]:
+        """Return the command-branch identity for a dot-notation path.
+
+        Mirrors :meth:`_extract_branch`: deep paths (4+ segments) send
+        only the two top levels, so their branch identity includes the
+        second key.
+        """
+        keys = path.split(".")
+        if len(keys) >= 4:
+            return (keys[0], keys[1])
+        return (keys[0],)
 
     @staticmethod
     def _set_in_dict(
