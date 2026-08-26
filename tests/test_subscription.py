@@ -50,10 +50,13 @@ class _FakeClient:
         self.watches: list[_FakeWatch] = []
         self.callbacks: list[Callable[[dict[str, Any]], None]] = []
         self.subscribe_event = asyncio.Event()
+        self.subscribe_raise: Exception | None = None
 
     async def subscribe_pool(
         self, pool_id: str, callback: Callable[[dict[str, Any]], None]
     ) -> _FakeWatch:
+        if self.subscribe_raise is not None:
+            raise self.subscribe_raise
         watch = _FakeWatch()
         self.watches.append(watch)
         self.callbacks.append(callback)
@@ -173,3 +176,92 @@ def test_low_level_subscribe_pool_unchanged() -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+def test_health_callback_reports_transitions() -> None:
+    async def _run() -> None:
+        client = _FakeClient()
+        events: list[bool] = []
+        sub = ResilientPoolSubscription(
+            client,  # type: ignore[arg-type]
+            "pool1",
+            lambda _data: None,
+            initial_backoff=0.005,
+            max_backoff=0.05,
+            health_check_interval=0.005,
+            on_health=events.append,
+        )
+        await sub._start()
+        assert sub.healthy
+
+        client.auth.raise_next = AquariteError("network blip")
+        await _wait_for(lambda: len(client.watches) >= 2)
+        await _wait_for(lambda: events[-1:] == [True])
+
+        assert events == [False, True]
+        assert sub.healthy
+        await sub.aclose()
+
+    asyncio.run(_run())
+
+
+def test_failed_reconnect_repaired_on_next_tick() -> None:
+    async def _run() -> None:
+        client = _FakeClient()
+        events: list[bool] = []
+        sub = ResilientPoolSubscription(
+            client,  # type: ignore[arg-type]
+            "pool1",
+            lambda _data: None,
+            initial_backoff=0.005,
+            max_backoff=0.05,
+            health_check_interval=0.005,
+            on_health=events.append,
+        )
+        await sub._start()
+
+        # The reconnect after the error fails too: the watch stays down and
+        # a single unhealthy transition is reported.
+        client.subscribe_raise = AquariteError("still down")
+        client.auth.raise_next = AquariteError("network blip")
+        calls = client.auth.get_client_calls
+        await _wait_for(lambda: client.auth.get_client_calls >= calls + 3)
+        assert events == [False]
+        assert not sub.healthy
+
+        # The network recovers between ticks: the dead watch must be
+        # re-established even though no token refresh happens.
+        client.subscribe_raise = None
+        await _wait_for(lambda: len(client.watches) >= 2)
+        await _wait_for(lambda: events[-1:] == [True])
+        assert events == [False, True]
+        await sub.aclose()
+
+    asyncio.run(_run())
+
+
+def test_health_callback_exception_does_not_kill_supervisor() -> None:
+    async def _run() -> None:
+        client = _FakeClient()
+
+        def _bad_callback(_healthy: bool) -> None:
+            raise RuntimeError("consumer bug")
+
+        sub = ResilientPoolSubscription(
+            client,  # type: ignore[arg-type]
+            "pool1",
+            lambda _data: None,
+            initial_backoff=0.005,
+            max_backoff=0.05,
+            health_check_interval=0.005,
+            on_health=_bad_callback,
+        )
+        await sub._start()
+
+        client.auth.raise_next = AquariteError("network blip")
+        await _wait_for(lambda: len(client.watches) >= 2)
+
+        assert sub._task is not None and not sub._task.done()
+        assert sub.healthy
+        await sub.aclose()
+
+    asyncio.run(_run())

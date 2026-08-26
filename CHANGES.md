@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+- Optional ``on_health`` callback on the resilient subscriptions (and the
+  ``subscribe_*_resilient`` factories): reports connection-state
+  transitions — ``on_health(False)`` when the connection is lost,
+  ``on_health(True)`` once re-established. Fires on transitions only,
+  never for ``aclose()``, and is invoked from the supervisor's event
+  loop (unlike the data callback, which runs on the Firestore thread).
+  A raising callback is logged and never kills the supervisor.
+- ``healthy`` property on the resilient subscriptions.
+
+### Fixed
+- After a failed reconnect, the supervisor now re-establishes the watch
+  on the next healthy tick. Previously the watch stayed dead if the
+  network recovered between ticks and no token refresh occurred, leaving
+  the subscription silently disconnected forever.
+
 ## 0.8.0
 
 ### Added
