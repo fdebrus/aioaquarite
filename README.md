@@ -20,7 +20,7 @@ This library provides a standalone API client for interacting with Hayward Aquar
 - **Auth**: email/password sign-in against Firebase Identity Toolkit, with automatic token refresh.
 - **Read**: list pools, fetch full pool documents, read individual fields with type coercion.
 - **Write**: atomic single- or multi-field commands (`set_value` / `set_values`), with the local cache kept in sync so back-to-back writes never revert each other.
-- **Real-time**: resilient Firestore subscriptions (pool data and the user's pool list) with automatic token-refresh reconnects and exponential backoff.
+- **Real-time**: resilient Firestore subscriptions (pool data and the user's pool list) with automatic token-refresh reconnects, exponential backoff, and connection-health reporting (`on_health` callback / `healthy` property).
 - **History**: pull stored sample series (pH, ORP, temperature, filtration, aux relays, …) and check clock drift against the Hayward backend.
 - **Typed errors**: every failure mode raises an `AquariteError` subclass, so callers only need one `except` clause.
 
@@ -97,6 +97,29 @@ pools_sub = await client.subscribe_user_pools_resilient(on_pools_changed)
 await pool_sub.aclose()
 await pools_sub.aclose()
 ```
+
+### Connection health
+
+Both resilient subscriptions accept an optional `on_health` callback that
+reports connection-state transitions — `on_health(False)` when the
+connection is lost, `on_health(True)` once it is re-established. Useful for
+marking entities unavailable in a Home Assistant integration while the
+Firestore connection is down:
+
+```python
+def on_health(healthy: bool) -> None:
+    print("Connection healthy:" if healthy else "Connection LOST:", healthy)
+
+pool_sub = await client.subscribe_pool_resilient(
+    pool_id, on_pool_update, on_health=on_health
+)
+print(pool_sub.healthy)  # current connection state
+```
+
+`on_health` fires on transitions only, never for `aclose()`, and — unlike
+the data callback — is invoked from the event loop running the supervisor
+task, so no `call_soon_threadsafe` is needed. An exception raised by the
+callback is logged and never kills the supervisor.
 
 ### Low-level subscriptions
 
