@@ -14,6 +14,12 @@ User callbacks are invoked from the Firestore background thread (same
 threading model as the underlying ``subscribe_*`` methods). Callers
 running on an asyncio loop should hand data back via
 ``loop.call_soon_threadsafe``.
+
+The optional ``on_health`` callback reports connection-state
+transitions: ``on_health(False)`` when the connection is lost and
+``on_health(True)`` once it is re-established. It fires on transitions
+only, never for ``aclose()``, and — unlike the data callback — is
+invoked from the event loop running the supervisor task.
 """
 
 from __future__ import annotations
@@ -53,9 +59,12 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
         initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
         health_check_interval: float | None = DEFAULT_HEALTH_CHECK_INTERVAL,
+        on_health: Callable[[bool], None] | None = None,
     ) -> None:
         self._client = client
         self._callback = callback
+        self._on_health = on_health
+        self._healthy = True
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
         self._health_check_interval = health_check_interval
@@ -63,6 +72,23 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._closed = False
+
+    @property
+    def healthy(self) -> bool:
+        """Whether the subscription currently believes it is connected."""
+        return self._healthy
+
+    def _set_healthy(self, healthy: bool) -> None:
+        """Update health and report the transition, guarding the callback."""
+        if healthy == self._healthy:
+            return
+        self._healthy = healthy
+        if self._on_health is None:
+            return
+        try:
+            self._on_health(healthy)
+        except Exception:  # noqa: BLE001 — a consumer bug must not kill the supervisor
+            _LOGGER.exception("%s health callback failed", self._label)
 
     @property
     @abc.abstractmethod
@@ -119,10 +145,16 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
                 _, refreshed = await auth.get_client()
                 if refreshed:
                     await self._resubscribe("token refreshed")
+                elif self._watch is None:
+                    # A previous reconnect failed and the network recovered
+                    # between ticks; without this the watch stays dead.
+                    await self._resubscribe("watch not established")
                 backoff = self._initial_backoff
+                self._set_healthy(True)
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001 — match HA's broad catch
+                self._set_healthy(False)
                 _LOGGER.warning(
                     "%s connection issue: %s; reconnecting in %.1fs",
                     self._label,
@@ -133,6 +165,7 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
                     await asyncio.sleep(backoff)
                     await self._resubscribe("after connection error")
                     backoff = self._initial_backoff
+                    self._set_healthy(True)
                 except asyncio.CancelledError:
                     raise
                 except Exception as err2:  # noqa: BLE001
@@ -169,6 +202,7 @@ class ResilientPoolSubscription(_ResilientSubscription[dict[str, Any]]):
         initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
         health_check_interval: float | None = DEFAULT_HEALTH_CHECK_INTERVAL,
+        on_health: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__(
             client,
@@ -176,6 +210,7 @@ class ResilientPoolSubscription(_ResilientSubscription[dict[str, Any]]):
             initial_backoff=initial_backoff,
             max_backoff=max_backoff,
             health_check_interval=health_check_interval,
+            on_health=on_health,
         )
         self._pool_id = pool_id
 

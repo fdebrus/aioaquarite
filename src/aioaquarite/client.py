@@ -116,6 +116,7 @@ class AquariteClient:
         initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
         health_check_interval: float | None = DEFAULT_HEALTH_CHECK_INTERVAL,
+        on_health: Callable[[bool], None] | None = None,
     ) -> ResilientPoolSubscription:
         """Subscribe to a pool with automatic token refresh and reconnect.
 
@@ -131,6 +132,7 @@ class AquariteClient:
             initial_backoff=initial_backoff,
             max_backoff=max_backoff,
             health_check_interval=health_check_interval,
+            on_health=on_health,
         )
         await sub._start()
         return sub
@@ -172,6 +174,7 @@ class AquariteClient:
         initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
         health_check_interval: float | None = DEFAULT_HEALTH_CHECK_INTERVAL,
+        on_health: Callable[[bool], None] | None = None,
     ) -> ResilientUserPoolsSubscription:
         """Subscribe to the user's pool list with token refresh and reconnect.
 
@@ -186,6 +189,7 @@ class AquariteClient:
             initial_backoff=initial_backoff,
             max_backoff=max_backoff,
             health_check_interval=health_check_interval,
+            on_health=on_health,
         )
         await sub._start()
         return sub
