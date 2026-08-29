@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.1
+
+### Fixed
+- Serialise concurrent commands targeting the same branch of a pool.
+  The payload is rebuilt from the stored document, and the document was
+  only updated after the send completed, so two callers writing
+  different fields of one branch at the same time each sent a branch
+  that predated the other and silently reverted it. Commands for the
+  same pool and branch now run under a lock covering payload
+  construction, the send, and the cache update.
+
 ## 0.9.0
 
 ### Added

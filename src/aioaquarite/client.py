@@ -30,6 +30,7 @@ class AquariteClient:
     def __init__(self, auth: AquariteAuth) -> None:
         self._auth = auth
         self._pool_data: dict[str, dict[str, Any]] = {}
+        self._branch_locks: dict[tuple[str, tuple[str, ...]], asyncio.Lock] = {}
 
     @property
     def auth(self) -> AquariteAuth:
@@ -364,6 +365,11 @@ class AquariteClient:
         On success the stored pool data is updated to match, so a
         subsequent command builds its payload on the new state instead
         of a snapshot-stale one (which would silently revert it).
+
+        Concurrent commands for the same branch are serialised: the
+        payload is built from the stored document, so two callers writing
+        different fields at once would otherwise each send a branch that
+        predates the other and revert it.
         """
         if not updates:
             raise ValueError("updates must not be empty")
@@ -374,6 +380,16 @@ class AquariteClient:
                 f"{sorted(signatures)}"
             )
 
+        lock = self._branch_locks.setdefault(
+            (pool_id, next(iter(signatures))), asyncio.Lock()
+        )
+        async with lock:
+            await self._async_send_branch(pool_id, updates)
+
+    async def _async_send_branch(
+        self, pool_id: str, updates: dict[str, Any]
+    ) -> None:
+        """Build and send one branch command; caller holds the branch lock."""
         pool_data = self._pool_data.get(pool_id)
         if not pool_data:
             raise RuntimeError("Pool data not available; fetch data first.")
