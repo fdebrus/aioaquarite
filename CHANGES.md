@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.2
+
+### Fixed
+- `filtration.timerVel1/2/3` are now coerced to `int`, not `bool`. They
+  carry a three-state pump speed (`0` slow, `1` medium, `2` high) — the
+  same semantics as `filtration.manVel`, which was already typed `int`.
+  Typed as `bool`, `get_value()` returned the caller's default (`None`)
+  for **high** and logged a warning on every read, so a timer interval
+  set to high speed surfaced as `unknown` in consumers and spammed the
+  log on each Firestore push. Slow and medium happened to survive
+  because `bool` round-trips back to index `0`/`1`. String-encoded
+  values (`"2"`, sent by some firmware revisions) were affected too.
+  Writes were never affected — outgoing values are not coerced.
+  Reported by @ThierryR42 (#17).
+
 ## 0.9.1
 
 ### Fixed

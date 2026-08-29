@@ -235,8 +235,8 @@
       "from": 46800,
       "to": 57600
     },
-    "timerVel1": 1,
-    "timerVel3": 1,
+    "timerVel1": 0,
+    "timerVel3": 2,
     "pumpType": 1,
     "interval3": {
       "from": 68400,

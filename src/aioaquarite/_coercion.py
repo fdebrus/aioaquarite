@@ -101,9 +101,11 @@ _TYPE_MAP: Final[dict[str, ExpectedType]] = {
     "filtration.smart.freeze": "bool",
     "filtration.smart.tempHigh": "int",
     "filtration.smart.tempMin": "int",
-    "filtration.timerVel1": "bool",
-    "filtration.timerVel2": "bool",
-    "filtration.timerVel3": "bool",
+    # Timer speeds carry the same 0/1/2 (slow/medium/high) pump speed as
+    # filtration.manVel below, so they stay int, not bool.
+    "filtration.timerVel1": "int",
+    "filtration.timerVel2": "int",
+    "filtration.timerVel3": "int",
     "filtration.status": "int",
     "filtration.pumpType": "int",
     "filtration.manVel": "int",
