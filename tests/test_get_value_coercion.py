@@ -204,6 +204,44 @@ def test_int_for_bool_outside_01_returns_default(
     assert val is None
 
 
+# ── multi-state pump speeds (issue #17) ───────────────────────────────────
+
+@pytest.mark.parametrize("index", [1, 2, 3])
+@pytest.mark.parametrize("raw, expected", [(0, 0), (1, 1), (2, 2)])
+def test_timer_speed_keeps_all_three_states(
+    index: int,
+    raw: int,
+    expected: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """timerVel carries slow/medium/high (0/1/2), like manVel.
+
+    Typed as bool it returned None for high and warned on every read,
+    so the matching Home Assistant select showed 'unknown'.
+    """
+    path = f"filtration.timerVel{index}"
+    data = {"filtration": {f"timerVel{index}": raw}}
+    with caplog.at_level(logging.WARNING, logger="aioaquarite._coercion"):
+        val = AquariteClient.get_value(data, path)
+    assert val == expected
+    assert type(val) is int
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("index", [1, 2, 3])
+def test_timer_speed_high_as_string_is_coerced(index: int) -> None:
+    """Some firmware revisions send numeric scalars as strings."""
+    data = {"filtration": {f"timerVel{index}": "2"}}
+    assert AquariteClient.get_value(data, f"filtration.timerVel{index}") == 2
+
+
+def test_timer_speeds_typed_like_man_vel() -> None:
+    """Guard the mapping itself: the four pump-speed paths share semantics."""
+    assert expected_type("filtration.manVel") == "int"
+    for index in (1, 2, 3):
+        assert expected_type(f"filtration.timerVel{index}") == "int"
+
+
 # ── wildcard path matching ────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
