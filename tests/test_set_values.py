@@ -161,3 +161,51 @@ def test_set_values_requires_pool_data() -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+def test_concurrent_branch_writes_do_not_revert_each_other() -> None:
+    """Two writers on one branch must not each send a pre-other snapshot.
+
+    The payload is built from the stored document, so without
+    serialisation both would snapshot before either updated the cache and
+    the second command would revert the first field.
+    """
+
+    async def _run() -> None:
+        client = _make_client()
+        sent: list[dict[str, Any]] = []
+        first_in_flight = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def _send(payload: dict[str, Any]) -> None:
+            changes = json.loads(payload["changes"])
+            if not sent:
+                sent.append(changes)
+                first_in_flight.set()
+                await release_first.wait()
+                return
+            sent.append(changes)
+
+        client.send_command = _send  # type: ignore[method-assign]
+
+        mode = asyncio.create_task(client.set_values(POOL_ID, {"light.mode": 0}))
+        await first_in_flight.wait()
+
+        schedule = asyncio.create_task(
+            client.set_values(POOL_ID, {"light.from": 21600})
+        )
+        # The second writer must be waiting, not building a stale payload.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert len(sent) == 1
+
+        release_first.set()
+        await asyncio.gather(mode, schedule)
+
+        assert len(sent) == 2
+        # The second command carries the first writer's field, not the
+        # value the branch held before it.
+        assert sent[1]["light"]["mode"] == 0
+        assert sent[1]["light"]["from"] == 21600
+
+    asyncio.run(_run())
