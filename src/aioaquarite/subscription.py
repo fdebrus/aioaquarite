@@ -69,6 +69,7 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
         self._max_backoff = max_backoff
         self._health_check_interval = health_check_interval
         self._watch: Watch | None = None
+        self._token_generation: int | None = None
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._closed = False
@@ -110,7 +111,12 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
         async with self._lock:
             if self._closed:
                 return
+            # Read before subscribing: a refresh landing mid-subscribe then
+            # leaves us one generation behind, so the next tick resubscribes
+            # rather than trusting a watch built on the older client.
+            generation = self._client.auth.token_generation
             self._watch = await self._subscribe_call()
+            self._token_generation = generation
 
     async def _do_unsubscribe(self) -> None:
         async with self._lock:
@@ -142,8 +148,8 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
                     _LOGGER.debug(
                         "Token expiring, refreshing (%s)", self._label
                     )
-                _, refreshed = await auth.get_client()
-                if refreshed:
+                _, generation = await auth.get_client()
+                if generation != self._token_generation:
                     await self._resubscribe("token refreshed")
                 elif self._watch is None:
                     # A previous reconnect failed and the network recovered

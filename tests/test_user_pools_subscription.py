@@ -67,8 +67,8 @@ def _make_authenticated_auth(firestore_client: _FakeFirestoreClient) -> Aquarite
         "localId": "uid-abc",
     }
 
-    async def _get_client() -> tuple[_FakeFirestoreClient, bool]:
-        return firestore_client, False
+    async def _get_client() -> tuple[_FakeFirestoreClient, int]:
+        return firestore_client, auth.token_generation
 
     auth.get_client = _get_client  # type: ignore[method-assign]
     return auth
@@ -154,11 +154,14 @@ class _FakeWatch:
 
 
 class _FakeAuth:
+    """Mirrors AquariteAuth: one rotation bumps a counter every caller reads."""
+
     def __init__(self) -> None:
         self.expiring = False
         self.refresh_on_next = False
         self.raise_next: Exception | None = None
         self.get_client_calls = 0
+        self.token_generation = 0
 
     def is_token_expiring(self) -> bool:
         return self.expiring
@@ -166,15 +169,19 @@ class _FakeAuth:
     def calculate_sleep_duration(self) -> float:
         return 0.005
 
-    async def get_client(self) -> tuple[object, bool]:
+    async def get_client(self) -> tuple[object, int]:
         self.get_client_calls += 1
         if self.raise_next is not None:
             err = self.raise_next
             self.raise_next = None
             raise err
-        refreshed = self.refresh_on_next
-        self.refresh_on_next = False
-        return object(), refreshed
+        # Only the first caller after a rotation performs it, exactly as
+        # _ensure_fresh_clients does under its lock. Everyone still sees the
+        # new generation.
+        if self.refresh_on_next:
+            self.refresh_on_next = False
+            self.token_generation += 1
+        return object(), self.token_generation
 
 
 class _FakeClient:
