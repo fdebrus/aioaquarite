@@ -50,21 +50,17 @@ class AquariteClient:
 
         Returns a mapping of pool_id -> pool_name.
         """
-        client, _ = await self._auth.get_client()
+        client = await self._auth.get_async_client()
         assert self._auth.tokens is not None
-        user_doc = await asyncio.to_thread(
-            client.collection("users")
-            .document(self._auth.tokens["localId"])
-            .get
-        )
-        user_dict = user_doc.to_dict() or {}  # type: ignore[union-attr]
+        user_doc = await client.collection("users").document(
+            self._auth.tokens["localId"]
+        ).get()
+        user_dict = user_doc.to_dict() or {}
 
         pools: dict[str, str] = {}
         for pool_id in user_dict.get("pools", []):
-            pool_doc = await asyncio.to_thread(
-                client.collection("pools").document(pool_id).get
-            )
-            pool_dict = pool_doc.to_dict()  # type: ignore[union-attr]
+            pool_doc = await client.collection("pools").document(pool_id).get()
+            pool_dict = pool_doc.to_dict()
             if pool_dict:
                 name = pool_dict.get("form", {}).get("name", "Unknown")
                 if "names" in pool_dict.get("form", {}) and pool_dict["form"]["names"]:
@@ -74,11 +70,9 @@ class AquariteClient:
 
     async def fetch_pool_data(self, pool_id: str) -> dict[str, Any]:
         """Fetch the full pool document from Firestore."""
-        client, _ = await self._auth.get_client()
-        pool_doc = await asyncio.to_thread(
-            client.collection("pools").document(pool_id).get
-        )
-        data: dict[str, Any] = pool_doc.to_dict() or {}  # type: ignore[union-attr]
+        client = await self._auth.get_async_client()
+        pool_doc = await client.collection("pools").document(pool_id).get()
+        data: dict[str, Any] = pool_doc.to_dict() or {}
         self._pool_data[pool_id] = data
         return data
 
@@ -93,6 +87,10 @@ class AquariteClient:
 
         Returns:
             A Watch object; call ``unsubscribe()`` on it to stop listening.
+
+        Uses the synchronous Firestore client in a thread: google-cloud-firestore
+        implements ``on_snapshot`` only there, ``AsyncDocumentReference.on_snapshot``
+        raises ``NotImplementedError``. Reads and commands are natively async.
         """
         client, _ = await self._auth.get_client()
         doc_ref = client.collection("pools").document(pool_id)
@@ -150,6 +148,10 @@ class AquariteClient:
 
         Returns a Watch object; call ``unsubscribe()`` on it to stop
         listening. The callback runs on the Firestore background thread.
+
+        Uses the synchronous Firestore client in a thread: google-cloud-firestore
+        implements ``on_snapshot`` only there, ``AsyncDocumentReference.on_snapshot``
+        raises ``NotImplementedError``. Reads and commands are natively async.
         """
         client, _ = await self._auth.get_client()
         assert self._auth.tokens is not None

@@ -24,6 +24,27 @@ This library provides a standalone API client for interacting with Hayward Aquar
 - **History**: pull stored sample series (pH, ORP, temperature, filtration, aux relays, …) and check clock drift against the Hayward backend.
 - **Typed errors**: every failure mode raises an `AquariteError` subclass, so callers only need one `except` clause.
 
+## Async model
+
+Document reads (`get_pools`, `fetch_pool_data`) run on the Firestore
+`AsyncClient` and are awaited directly. The command and history endpoints
+(`set_value`, `set_values`, `send_command`, `get_pool_stats`,
+`get_server_date`) are plain `aiohttp` calls. Neither path blocks the event
+loop or dispatches to a thread pool.
+
+The **real-time listener is the exception**: `google-cloud-firestore`
+implements `on_snapshot` only on its synchronous client —
+`AsyncDocumentReference.on_snapshot` raises `NotImplementedError` (checked
+against 2.29.0). `subscribe_pool`, `subscribe_user_pools` and the
+subscription teardown therefore run the synchronous client through
+`asyncio.to_thread`, and your snapshot callback is invoked from the
+Firestore background thread (hand data back with `loop.call_soon_threadsafe`,
+as the examples below do). This is an upstream limitation, not a design
+choice; it will be revisited if upstream implements an async listener.
+
+Both clients are built from the same credentials, rotated together on token
+refresh, and released by `AquariteAuth.close()`.
+
 ## Installation
 
 ```bash
