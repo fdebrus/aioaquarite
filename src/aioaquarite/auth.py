@@ -53,6 +53,7 @@ class AquariteAuth:
         self._lock = asyncio.Lock()
         self._cached_user_id_token: str | None = None
         self._cached_user_id: str | None = None
+        self._token_generation = 0
 
     async def authenticate(self) -> dict[str, Any]:
         """Sign in and return token information."""
@@ -149,6 +150,7 @@ class AquariteAuth:
         self._async_client = AsyncFirestoreClient(
             project=FIRESTORE_PROJECT, credentials=self._credentials
         )
+        self._token_generation += 1
 
     def _close_clients(self) -> None:
         """Close both Firestore clients, if built.
@@ -171,10 +173,20 @@ class AquariteAuth:
         """
         self._close_clients()
 
-    async def _ensure_fresh_clients(self) -> bool:
-        """Authenticate or refresh as needed; report whether a refresh ran."""
-        token_refreshed = False
+    @property
+    def token_generation(self) -> int:
+        """Counter bumped every time the Firestore clients are replaced.
 
+        Listeners compare it against the value they captured when they
+        subscribed. A counter is readable by every caller; a per-call
+        "a refresh just happened" flag is consumed by whichever caller
+        wins the lock, leaving the others on a watch that is about to
+        expire.
+        """
+        return self._token_generation
+
+    async def _ensure_fresh_clients(self) -> int:
+        """Authenticate or refresh as needed; return the token generation."""
         async with self._lock:
             if self._client is None:
                 _LOGGER.debug(
@@ -184,29 +196,29 @@ class AquariteAuth:
 
             if self.is_token_expiring():
                 await self.refresh_token()
-                token_refreshed = True
 
-        return token_refreshed
+            return self._token_generation
 
-    async def get_client(self) -> tuple[FirestoreClient, bool]:
+    async def get_client(self) -> tuple[FirestoreClient, int]:
         """Get the synchronous Firestore client, refreshing the token if needed.
 
-        Returns the Firestore client and a boolean indicating whether
-        a token refresh occurred (so the caller can resubscribe).
+        Returns the Firestore client and the current token generation, so a
+        caller holding a long-lived listener can tell that its credentials
+        have been rotated underneath it and resubscribe.
 
         This client backs the real-time listener only; document reads go
         through :meth:`get_async_client`.
         """
-        token_refreshed = await self._ensure_fresh_clients()
+        generation = await self._ensure_fresh_clients()
         assert self._client is not None
-        return self._client, token_refreshed
+        return self._client, generation
 
     async def get_async_client(self) -> AsyncFirestoreClient:
         """Get the async Firestore client, refreshing the token if needed.
 
-        Used for document reads, which are natively async. Callers that
-        need to know whether a refresh happened (to resubscribe a
-        listener) should use :meth:`get_client` instead.
+        Used for document reads, which are natively async. Callers holding a
+        listener that must be rebuilt when credentials rotate should use
+        :meth:`get_client` and watch its generation instead.
         """
         await self._ensure_fresh_clients()
         assert self._async_client is not None
