@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.11.0
+
+### Fixed
+- Every subscription on an account now resubscribes when the shared token
+  rotates. `_ensure_fresh_clients()` reported a rotation as a per-call
+  boolean, set only for the caller that actually ran the refresh under the
+  lock. Every other supervisor read `False`, took neither the "token
+  refreshed" nor the "watch not established" branch, and kept a watch bound
+  to credentials expiring 300 seconds later. That watch then died silently
+  at expiry — no exception, no health transition — so consumers kept their
+  entities available and serving frozen values until some later rotation
+  happened to be won by that supervisor. Severity scaled with pool count:
+  N pools meant N+1 supervisors competing for a single boolean.
+
+### Changed
+- **`get_client()` now returns `tuple[Client, int]`.** The second element is
+  a token generation counter, bumped whenever the Firestore clients are
+  replaced, in place of the previous "a refresh just happened" boolean. A
+  counter can be read by every caller; the boolean was consumed by the first
+  one. Callers holding a long-lived listener should record the generation
+  they subscribed with and resubscribe whenever it differs. Testing the
+  value for truthiness — valid under the boolean contract — now resubscribes
+  on every check instead.
+
+### Added
+- `AquariteAuth.token_generation` — the same counter as a property, for
+  callers that need to read it without requesting a client.
+
 ## 0.10.0
 
 ### Changed
