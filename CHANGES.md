@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.10.0
+
+### Changed
+- Firestore document reads are now natively async. `get_pools()` and
+  `fetch_pool_data()` await `AsyncClient` document references instead of
+  dispatching the synchronous client through `asyncio.to_thread`. The
+  library previously exposed coroutines while running every Firestore
+  operation in a thread pool; reads and commands are now genuinely
+  non-blocking.
+- `AquariteAuth` builds an `AsyncClient` alongside the existing
+  synchronous `Client` from the same credentials, and rotates and closes
+  both together. Previously only the synchronous client was closed on
+  rotation.
+
+### Added
+- `AquariteAuth.get_async_client()` — accessor for the async Firestore
+  client used by the read paths. `get_client()` keeps its
+  `tuple[Client, bool]` contract for the subscription path, where the
+  boolean still signals "token refreshed, resubscribe".
+- `AquariteAuth.close()` — releases both Firestore clients. The aiohttp
+  session is caller-owned and deliberately untouched.
+
+### Known limitation
+- The real-time listener still runs the synchronous client in a thread.
+  `google-cloud-firestore` implements `on_snapshot` only on the
+  synchronous client; `AsyncDocumentReference.on_snapshot` raises
+  `NotImplementedError` (verified against 2.29.0). `subscribe_pool()`,
+  `subscribe_user_pools()` and the subscription teardown therefore keep
+  their `asyncio.to_thread` calls, now documented in place. A test pins
+  the upstream behaviour so the split can be revisited if it changes.
+
+The public API is unchanged.
+
 ## 0.9.2
 
 ### Fixed

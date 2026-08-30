@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
+from google.cloud.firestore_v1 import AsyncClient as AsyncFirestoreClient
 from google.cloud.firestore_v1 import Client as FirestoreClient
 from google.oauth2.credentials import Credentials
 
@@ -44,7 +45,11 @@ class AquariteAuth:
         self.tokens: dict[str, Any] | None = None
         self.expiry: datetime.datetime | None = None
         self._credentials: Credentials | None = None
+        # Two Firestore clients share one set of credentials: the async one
+        # serves document reads natively, the synchronous one exists only for
+        # the real-time listener (see AquariteClient.subscribe_pool).
         self._client: FirestoreClient | None = None
+        self._async_client: AsyncFirestoreClient | None = None
         self._lock = asyncio.Lock()
         self._cached_user_id_token: str | None = None
         self._cached_user_id: str | None = None
@@ -128,10 +133,9 @@ class AquariteAuth:
             _LOGGER.debug("Token refreshed successfully.")
 
     def _update_firestore_client(self) -> None:
-        """Sync credentials to the Firestore client."""
+        """Sync credentials to both Firestore clients."""
         assert self.tokens is not None
-        if self._client is not None:
-            self._client.close()  # type: ignore[no-untyped-call]
+        self._close_clients()
         self._credentials = Credentials(  # type: ignore[no-untyped-call]
             token=self.tokens["idToken"],
             refresh_token=self.tokens["refreshToken"],
@@ -142,13 +146,33 @@ class AquariteAuth:
         self._client = FirestoreClient(
             project=FIRESTORE_PROJECT, credentials=self._credentials
         )
+        self._async_client = AsyncFirestoreClient(
+            project=FIRESTORE_PROJECT, credentials=self._credentials
+        )
 
-    async def get_client(self) -> tuple[FirestoreClient, bool]:
-        """Get the Firestore client, refreshing the token if needed.
+    def _close_clients(self) -> None:
+        """Close both Firestore clients, if built.
 
-        Returns the Firestore client and a boolean indicating whether
-        a token refresh occurred (so the caller can resubscribe).
+        Both ``close()`` methods are synchronous, including the async
+        client's — it shuts down the gRPC channel, it does not await I/O.
         """
+        if self._client is not None:
+            self._client.close()  # type: ignore[no-untyped-call]
+            self._client = None
+        if self._async_client is not None:
+            self._async_client.close()  # type: ignore[no-untyped-call]
+            self._async_client = None
+
+    def close(self) -> None:
+        """Release both Firestore clients.
+
+        The aiohttp session is supplied by the caller and is deliberately
+        left alone.
+        """
+        self._close_clients()
+
+    async def _ensure_fresh_clients(self) -> bool:
+        """Authenticate or refresh as needed; report whether a refresh ran."""
         token_refreshed = False
 
         async with self._lock:
@@ -162,8 +186,31 @@ class AquariteAuth:
                 await self.refresh_token()
                 token_refreshed = True
 
+        return token_refreshed
+
+    async def get_client(self) -> tuple[FirestoreClient, bool]:
+        """Get the synchronous Firestore client, refreshing the token if needed.
+
+        Returns the Firestore client and a boolean indicating whether
+        a token refresh occurred (so the caller can resubscribe).
+
+        This client backs the real-time listener only; document reads go
+        through :meth:`get_async_client`.
+        """
+        token_refreshed = await self._ensure_fresh_clients()
         assert self._client is not None
         return self._client, token_refreshed
+
+    async def get_async_client(self) -> AsyncFirestoreClient:
+        """Get the async Firestore client, refreshing the token if needed.
+
+        Used for document reads, which are natively async. Callers that
+        need to know whether a refresh happened (to resubscribe a
+        listener) should use :meth:`get_client` instead.
+        """
+        await self._ensure_fresh_clients()
+        assert self._async_client is not None
+        return self._async_client
 
     def is_token_expiring(self) -> bool:
         """Check if the token is within the refresh buffer of expiring."""
