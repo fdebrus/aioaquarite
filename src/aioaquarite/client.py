@@ -337,7 +337,12 @@ class AquariteClient:
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as response:
-                _LOGGER.debug("Command sent. Status: %s", response.status)
+                _LOGGER.debug(
+                    "sendPoolCommand operation=%s pool_id=%s -> %s",
+                    data.get("operation"),
+                    data.get("poolId"),
+                    response.status,
+                )
                 if response.status >= 400:
                     raise CommandError(
                         f"Command failed with status {response.status}"
@@ -421,11 +426,7 @@ class AquariteClient:
             "changes": json.dumps(current_config),
             "source": "web",
         }
-        _LOGGER.debug(
-            "set_values updates=%s changes=%s",
-            effective,
-            json.dumps(current_config, indent=2, default=str),
-        )
+        _LOGGER.debug("set_values pool_id=%s updates=%s", pool_id, effective)
         await self.send_command(payload)
 
         # Mirror the accepted changes into the stored pool data so the
