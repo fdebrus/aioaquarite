@@ -7,9 +7,9 @@ from copy import deepcopy
 from typing import Any, Callable, MutableMapping
 
 import aiohttp
-from google.cloud.firestore_v1.watch import Watch
 
 from ._coercion import normalise as _normalise
+from ._watch import AsyncDocumentWatch
 from .auth import AquariteAuth
 from .const import DEFAULT_HTTP_TIMEOUT, HAYWARD_REST_API
 from .exceptions import CommandError, ConnectionError
@@ -31,6 +31,10 @@ class AquariteClient:
         self._auth = auth
         self._pool_data: dict[str, dict[str, Any]] = {}
         self._branch_locks: dict[tuple[str, tuple[str, ...]], asyncio.Lock] = {}
+        # Firestore resume tokens, keyed by document path. Successive
+        # watches of the same document resume where the last one stopped
+        # instead of replaying from scratch.
+        self._resume_tokens: dict[str, bytes] = {}
 
     @property
     def auth(self) -> AquariteAuth:
@@ -78,32 +82,34 @@ class AquariteClient:
 
     async def subscribe_pool(
         self, pool_id: str, callback: Callable[[dict[str, Any]], None]
-    ) -> Watch:
+    ) -> AsyncDocumentWatch:
         """Subscribe to real-time Firestore updates for a pool.
 
         Args:
             pool_id: The pool document ID.
-            callback: Called with the pool data dict on each snapshot.
+            callback: Called with the pool data dict on each snapshot,
+                **on the event loop** (not from a thread — since 0.12.0
+                the listener is a native async task).
 
         Returns:
-            A Watch object; call ``unsubscribe()`` on it to stop listening.
-
-        Uses the synchronous Firestore client in a thread: google-cloud-firestore
-        implements ``on_snapshot`` only there, ``AsyncDocumentReference.on_snapshot``
-        raises ``NotImplementedError``. Reads and commands are natively async.
+            An :class:`AsyncDocumentWatch`; call ``unsubscribe()`` (or
+            ``await aclose()``) on it to stop listening.
         """
-        client, _ = await self._auth.get_client()
+        client = await self._auth.get_async_client()
         doc_ref = client.collection("pools").document(pool_id)
 
-        def on_snapshot(
-            doc_snapshot: list[Any], changes: list[Any], read_time: Any
-        ) -> None:
-            for doc in doc_snapshot:
-                data: dict[str, Any] = doc.to_dict()
-                self._pool_data[pool_id] = data
-                callback(data)
+        def _on_data(data: dict[str, Any]) -> None:
+            self._pool_data[pool_id] = data
+            callback(data)
 
-        watch: Watch = await asyncio.to_thread(doc_ref.on_snapshot, on_snapshot)
+        watch = AsyncDocumentWatch(
+            client,
+            doc_ref._document_path,
+            _on_data,
+            resume_tokens=self._resume_tokens,
+            label=f"pool {pool_id}",
+        )
+        await watch.start()
         _LOGGER.debug("Firestore subscription active for %s", pool_id)
         return watch
 
@@ -138,35 +144,35 @@ class AquariteClient:
 
     async def subscribe_user_pools(
         self, callback: Callable[[list[str]], None]
-    ) -> Watch:
+    ) -> AsyncDocumentWatch:
         """Subscribe to the user document's ``pools`` list.
 
         The callback receives the current ``list[str]`` of pool IDs every
-        time ``users/{uid}`` changes. Use this to detect pool additions
-        or removals in the Hayward app without polling
-        :meth:`get_pools`.
+        time ``users/{uid}`` changes, **on the event loop** (not from a
+        thread — since 0.12.0 the listener is a native async task). Use
+        this to detect pool additions or removals in the Hayward app
+        without polling :meth:`get_pools`.
 
-        Returns a Watch object; call ``unsubscribe()`` on it to stop
-        listening. The callback runs on the Firestore background thread.
-
-        Uses the synchronous Firestore client in a thread: google-cloud-firestore
-        implements ``on_snapshot`` only there, ``AsyncDocumentReference.on_snapshot``
-        raises ``NotImplementedError``. Reads and commands are natively async.
+        Returns an :class:`AsyncDocumentWatch`; call ``unsubscribe()``
+        (or ``await aclose()``) on it to stop listening.
         """
-        client, _ = await self._auth.get_client()
+        client = await self._auth.get_async_client()
         assert self._auth.tokens is not None
         doc_ref = client.collection("users").document(
             self._auth.tokens["localId"]
         )
 
-        def on_snapshot(
-            doc_snapshot: list[Any], changes: list[Any], read_time: Any
-        ) -> None:
-            for doc in doc_snapshot:
-                data: dict[str, Any] = doc.to_dict() or {}
-                callback(list(data.get("pools", [])))
+        def _on_data(data: dict[str, Any]) -> None:
+            callback(list(data.get("pools", [])))
 
-        watch: Watch = await asyncio.to_thread(doc_ref.on_snapshot, on_snapshot)
+        watch = AsyncDocumentWatch(
+            client,
+            doc_ref._document_path,
+            _on_data,
+            resume_tokens=self._resume_tokens,
+            label="user pools",
+        )
+        await watch.start()
         _LOGGER.debug("Firestore user-pools subscription active")
         return watch
 

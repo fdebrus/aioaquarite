@@ -199,32 +199,30 @@ def test_get_pools_uses_the_async_client() -> None:
 # ── the listener still needs the synchronous client ────────────────────
 
 
-def test_subscribe_pool_still_uses_the_sync_client_in_a_thread() -> None:
-    """Documented upstream limitation, asserted so it stays deliberate.
+def test_subscribe_pool_uses_the_async_client_natively() -> None:
+    """Since 0.12.0 the listener is a native task on the async client.
 
-    AsyncDocumentReference.on_snapshot raises NotImplementedError in
-    google-cloud-firestore, so the real-time listener has to run the
-    synchronous client off-loop.
+    No sync client, no thread dispatch — the last thread in the library
+    is gone.
     """
-    watch = MagicMock()
-    sync_client = MagicMock()
-    sync_client.collection.return_value.document.return_value.on_snapshot = (
-        MagicMock(return_value=watch)
-    )
+    from .test_watch import FAKE_CURRENT, FAKE_DOC, FAKE_HOLD, _pool_client
 
-    auth = MagicMock()
-    auth.get_client = AsyncMock(return_value=(sync_client, False))
-    auth.get_async_client = AsyncMock(
-        side_effect=AssertionError("async client cannot serve on_snapshot")
-    )
-    auth.tokens = {"idToken": "id-token", "localId": LOCAL_ID}
-    client = AquariteClient(auth)
+    async def _run() -> None:
+        client, gapic = _pool_client(
+            scripts=[[FAKE_DOC, FAKE_CURRENT, FAKE_HOLD]]
+        )
 
-    async def _run() -> Any:
-        return await client.subscribe_pool(POOL_ID, lambda _data: None)
+        received: list[dict[str, Any]] = []
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as to_thread:
+            watch = await client.subscribe_pool(POOL_ID, received.append)
+            await watch.aclose()
 
-    assert asyncio.run(_run()) is watch
-    auth.get_client.assert_awaited_once()
+        to_thread.assert_not_called()
+        assert received and received[0]["light"] == {"status": 1}
+        client.auth.get_async_client.assert_awaited()
+        client.auth.get_client.assert_not_called()
+
+    asyncio.run(_run())
 
 
 def test_async_document_reference_still_lacks_on_snapshot() -> None:

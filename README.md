@@ -32,15 +32,16 @@ Document reads (`get_pools`, `fetch_pool_data`) run on the Firestore
 `get_server_date`) are plain `aiohttp` calls. Neither path blocks the event
 loop or dispatches to a thread pool.
 
-The **real-time listener is the exception**: `google-cloud-firestore`
-implements `on_snapshot` only on its synchronous client —
-`AsyncDocumentReference.on_snapshot` raises `NotImplementedError` (checked
-against 2.29.0). `subscribe_pool`, `subscribe_user_pools` and the
-subscription teardown therefore run the synchronous client through
-`asyncio.to_thread`, and your snapshot callback is invoked from the
-Firestore background thread (hand data back with `loop.call_soon_threadsafe`,
-as the examples below do). This is an upstream limitation, not a design
-choice; it will be revisited if upstream implements an async listener.
+The **real-time listener is native too** (since 0.12.0):
+`google-cloud-firestore` implements `on_snapshot` only on its synchronous
+client — `AsyncDocumentReference.on_snapshot` raises `NotImplementedError`
+(checked against 2.29.0) — so the library speaks the underlying `Listen`
+RPC itself, through the async gRPC layer the package already ships
+(`FirestoreAsyncClient.listen`). Each subscription is an asyncio task on
+the running loop; nothing in the library creates a thread or calls
+`asyncio.to_thread`. **Snapshot callbacks are invoked on the event loop**,
+so no `loop.call_soon_threadsafe` is needed anywhere (existing code that
+still uses it keeps working — it just adds a needless hop).
 
 Both clients are built from the same credentials, rotated together on token
 refresh, and released by `AquariteAuth.close()`.
@@ -101,8 +102,8 @@ stale Firestore snapshot.
 ## Real-time updates
 
 Subscribe with built-in token refresh and automatic reconnect (recommended).
-Callbacks run on the Firestore background thread — asyncio consumers should
-wrap them with `loop.call_soon_threadsafe`.
+Callbacks are invoked on the event loop — call your asyncio code directly
+from them, no `loop.call_soon_threadsafe` needed.
 
 ```python
 def on_pool_update(data):
@@ -150,11 +151,20 @@ are still available for both pool data and the user's pool list:
 ```python
 watch = await client.subscribe_pool(pool_id, on_pool_update)
 # ... maintain token freshness, resubscribe on errors, etc. ...
-watch.unsubscribe()
+watch.unsubscribe()          # synchronous: cancels the listen task
+# or, to wait for full teardown:
+await watch.aclose()
 
 watch = await client.subscribe_user_pools(on_pools_changed)
 watch.unsubscribe()
 ```
+
+Each watch is an `AsyncDocumentWatch` running the Firestore `Listen` stream
+as a task on your event loop. `await client.subscribe_pool(...)` returns
+only once the server has confirmed a first consistent snapshot (and your
+callback has seen it); a stream that ends or errors finishes the watch's
+`task`, which is how the resilient supervisor notices and reconnects —
+resuming from the last consistent point via the saved resume token.
 
 ## Historical stats & server clock
 

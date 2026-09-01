@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.12.0
+
+### Changed
+- **The real-time listener is now natively async.** `subscribe_pool` and
+  `subscribe_user_pools` no longer run the synchronous Firestore `Watch`
+  through `asyncio.to_thread`; each subscription is an `AsyncDocumentWatch`
+  speaking the `Listen` RPC directly on the async gRPC layer
+  (`FirestoreAsyncClient.listen`), as an asyncio task on the running loop.
+  The library now contains no `asyncio.to_thread` calls and creates no
+  threads.
+- **Snapshot callbacks are invoked on the event loop**, not on a Firestore
+  background thread. `loop.call_soon_threadsafe` is no longer needed in
+  consumers (existing code using it keeps working — it just adds a hop).
+- `subscribe_pool` / `subscribe_user_pools` now return only after the
+  server confirms a first consistent snapshot (CURRENT), so a subscribe
+  that cannot deliver data fails loudly instead of returning a silently
+  dead watch. The returned watch still has synchronous `unsubscribe()` and
+  `await`-able `aclose()`.
+- The resilient supervisors now notice a dead stream the moment its task
+  finishes (health transition + backoff + resubscribe), instead of only at
+  the next health-check tick. Reconnects resume from the last consistent
+  point via the server's resume token rather than replaying from scratch.
+
+### Unchanged
+- `subscribe_pool_resilient` / `subscribe_user_pools_resilient` signatures,
+  `on_health` transition-only semantics, `aclose()`, and
+  `AquariteAuth.get_client()`'s `tuple[Client, int]` contract are all
+  exactly as in 0.11.0.
+- `from aioaquarite import Watch` still works as a vestigial re-export of
+  the upstream class; new code should use `AsyncDocumentWatch`.
+
 ## 0.11.0
 
 ### Fixed
