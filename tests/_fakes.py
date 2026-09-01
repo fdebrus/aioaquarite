@@ -56,12 +56,17 @@ class FakeTaskWatch:
 
 
 class FakeGapic:
-    """Fake ``FirestoreAsyncClient``: ``listen()`` replays scripted responses.
+    """Fake ``FirestoreAsyncClient``: its transport replays scripted responses.
 
     Each script is a list whose items are ``ListenResponse`` protos,
     exceptions (raised mid-stream), or :data:`HOLD` (park until cancelled).
     A stream whose script runs out simply ends, which the watch treats as
     a failure — exactly like the real RPC.
+
+    Only ``transport.listen`` exists — deliberately no ``listen`` method on
+    the client itself, so a regression back to the generated wrapper (which
+    stamps an empty ``x-goog-request-params`` header the backend rejects)
+    fails every protocol test with an ``AttributeError``.
     """
 
     def __init__(self) -> None:
@@ -69,17 +74,25 @@ class FakeGapic:
         self.captured_requests: list[ListenRequest] = []
         self.captured_metadata: list[Any] = []
         self.streams_opened = 0
+        self.transport = _FakeTransport(self)
 
-    async def listen(
-        self, requests: Any = None, metadata: Any = ()
-    ) -> Any:
-        first = await anext(requests)
-        self.captured_requests.append(first)
-        self.captured_metadata.append(metadata)
-        self.streams_opened += 1
-        script = self.scripts.pop(0) if self.scripts else []
+
+class _FakeTransport:
+    """The raw gRPC surface the watch calls: a ``stream_stream``
+    multicallable — a plain call returning an async-iterable, no coroutine."""
+
+    def __init__(self, gapic: FakeGapic) -> None:
+        self._gapic = gapic
+
+    def listen(self, requests: Any, metadata: Any = ()) -> Any:
+        gapic = self._gapic
+        gapic.captured_metadata.append(metadata)
+        gapic.streams_opened += 1
+        script = gapic.scripts.pop(0) if gapic.scripts else []
 
         async def _gen() -> Any:
+            first = await anext(requests)
+            gapic.captured_requests.append(first)
             for item in script:
                 if item is HOLD:
                     await asyncio.Event().wait()

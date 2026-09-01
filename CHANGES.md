@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.1
+
+### Fixed
+- **Every subscription failed against the real backend with
+  400 INVALID_ARGUMENT** ("Mismatch between database name in the request
+  and http header"). 0.12.0 opened the stream through the generated
+  ``FirestoreAsyncClient.listen`` wrapper, which appends an empty
+  ``x-goog-request-params`` routing header to every call; Firestore
+  compares the request's database against that header and rejects the
+  stream. The watch now calls the raw transport multicallable
+  (``transport.listen``) with the resource-prefix metadata — exactly what
+  the synchronous ``Watch`` has always done, and why it never hit this.
+  No API or behavior changes otherwise.
+
 ## 0.12.0
 
 ### Changed

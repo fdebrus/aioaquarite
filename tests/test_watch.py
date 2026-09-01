@@ -359,6 +359,30 @@ def test_callback_exception_does_not_kill_the_stream() -> None:
     asyncio.run(_run())
 
 
+def test_gapic_listen_wrapper_is_bypassed_for_a_reason() -> None:
+    """Pin the upstream defect that forces the raw-transport call.
+
+    The generated ``FirestoreAsyncClient.listen`` wrapper appends an empty
+    ``x-goog-request-params`` routing header to every call, and Firestore
+    rejects such a stream with 400 INVALID_ARGUMENT ("Mismatch between
+    database name in the request and http header"). If either assertion
+    here breaks, upstream changed the wrapper — re-evaluate whether the
+    watch can go back through it instead of ``transport.listen``.
+    """
+    import inspect
+
+    from google.api_core import gapic_v1
+    from google.cloud.firestore_v1.services.firestore.async_client import (
+        FirestoreAsyncClient,
+    )
+
+    assert gapic_v1.routing_header.to_grpc_metadata(()) == (
+        "x-goog-request-params",
+        "",
+    )
+    assert "to_grpc_metadata(())" in inspect.getsource(FirestoreAsyncClient.listen)
+
+
 # ── shutdown ───────────────────────────────────────────────────────────
 
 

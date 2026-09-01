@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Callable, MutableMapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, MutableMapping
 from typing import Any, cast
 
 from google.cloud.firestore_v1 import AsyncClient, _helpers
@@ -196,7 +196,18 @@ class AsyncDocumentWatch:
             self._label,
             len(resume_token),
         )
-        stream = await gapic.listen(requests=_requests(), metadata=metadata)
+        # Call the raw transport multicallable, not the generated
+        # FirestoreAsyncClient.listen wrapper: the wrapper stamps an empty
+        # ``x-goog-request-params`` routing header onto every call, and the
+        # backend rejects the stream as a database mismatch
+        # (400 INVALID_ARGUMENT). The synchronous Watch bypasses the
+        # wrapper for the same reason; the resource-prefix metadata is all
+        # the server needs.
+        listen_rpc = cast(
+            "Callable[..., AsyncIterable[ListenResponse]]",
+            gapic.transport.listen,
+        )
+        stream = listen_rpc(_requests(), metadata=metadata)
         async for response in stream:
             which = response._pb.WhichOneof("response_type")
 
