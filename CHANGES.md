@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.2
+
+### Changed
+- Quieter, more informative debug logging. `set_values` no longer dumps the
+  entire (multi-line, pretty-printed) branch config on every write — it
+  logs the pool id and the fields being written. The command log line now
+  says which operation and pool it sent
+  (`sendPoolCommand operation=WRP pool_id=... -> 200`) instead of a bare
+  "Command sent. Status: 200".
+
 ## 0.12.1
 
 ### Fixed
