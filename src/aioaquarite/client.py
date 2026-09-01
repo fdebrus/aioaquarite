@@ -127,7 +127,7 @@ class AquariteClient:
 
         Returns a :class:`ResilientPoolSubscription` handle; call
         ``await handle.aclose()`` to stop the subscription. The callback is
-        invoked from the Firestore background thread — see
+        invoked on the event loop — see
         :class:`ResilientPoolSubscription` for details.
         """
         sub = ResilientPoolSubscription(
@@ -189,7 +189,7 @@ class AquariteClient:
 
         Returns a :class:`ResilientUserPoolsSubscription` handle; call
         ``await handle.aclose()`` to stop the subscription. The callback
-        runs on the Firestore background thread — see
+        is invoked on the event loop — see
         :class:`ResilientUserPoolsSubscription` for details.
         """
         sub = ResilientUserPoolsSubscription(
