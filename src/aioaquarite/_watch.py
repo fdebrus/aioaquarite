@@ -191,11 +191,20 @@ class AsyncDocumentWatch:
         pending: dict[str, Any] | None = None
         current = False
 
-        _LOGGER.debug(
-            "%s: opening listen stream (resume token: %d bytes)",
-            self._label,
-            len(resume_token),
-        )
+        if resume_token:
+            _LOGGER.debug(
+                "%s: opening listen stream, resuming from saved token "
+                "(%d bytes)",
+                self._label,
+                len(resume_token),
+            )
+        else:
+            # Normal on the first connection: a resume token only exists
+            # once a previous stream reached a consistency point.
+            _LOGGER.debug(
+                "%s: opening listen stream (fresh, no resume token)",
+                self._label,
+            )
         # Call the raw transport multicallable, not the generated
         # FirestoreAsyncClient.listen wrapper: the wrapper stamps an empty
         # ``x-goog-request-params`` routing header onto every call, and the
