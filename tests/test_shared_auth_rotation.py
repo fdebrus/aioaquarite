@@ -28,12 +28,7 @@ from aioaquarite.subscription import (
 )
 
 
-class _FakeWatch:
-    def __init__(self) -> None:
-        self.unsubscribed = False
-
-    def unsubscribe(self) -> None:
-        self.unsubscribed = True
+from ._fakes import FakeTaskWatch as _FakeWatch
 
 
 class _SharedAuth:

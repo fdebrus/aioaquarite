@@ -11,13 +11,7 @@ import pytest
 from aioaquarite.exceptions import AquariteError
 from aioaquarite.subscription import ResilientPoolSubscription
 
-
-class _FakeWatch:
-    def __init__(self) -> None:
-        self.unsubscribed = False
-
-    def unsubscribe(self) -> None:
-        self.unsubscribed = True
+from ._fakes import FakeTaskWatch as _FakeWatch
 
 
 class _FakeAuth:
@@ -29,12 +23,13 @@ class _FakeAuth:
         self.raise_next: Exception | None = None
         self.get_client_calls = 0
         self.token_generation = 0
+        self.sleep_duration = 0.005
 
     def is_token_expiring(self) -> bool:
         return self.expiring
 
     def calculate_sleep_duration(self) -> float:
-        return 0.005
+        return self.sleep_duration
 
     async def get_client(self) -> tuple[object, int]:
         self.get_client_calls += 1
@@ -268,6 +263,40 @@ def test_health_callback_exception_does_not_kill_supervisor() -> None:
         await _wait_for(lambda: len(client.watches) >= 2)
 
         assert sub._task is not None and not sub._task.done()
+        assert sub.healthy
+        await sub.aclose()
+
+    asyncio.run(_run())
+
+
+def test_stream_death_triggers_reconnect_and_health() -> None:
+    """A dead listen task must wake the supervisor before its next tick."""
+
+    async def _run() -> None:
+        client = _FakeClient()
+        events: list[bool] = []
+        sub = ResilientPoolSubscription(
+            client,  # type: ignore[arg-type]
+            "pool1",
+            lambda _data: None,
+            initial_backoff=0.005,
+            max_backoff=0.05,
+            # Long tick: the supervisor must react to the task dying, not
+            # to a health-check poll happening to come round.
+            health_check_interval=30.0,
+            on_health=events.append,
+        )
+        # The token is nowhere near expiry either — no tick comes round on
+        # its own within this test.
+        client.auth.sleep_duration = 30.0
+        await sub._start()
+        assert len(client.watches) == 1
+
+        client.watches[0].die(AquariteError("stream ended"))
+        await _wait_for(lambda: len(client.watches) >= 2)
+        await _wait_for(lambda: events[-1:] == [True])
+
+        assert events == [False, True]
         assert sub.healthy
         await sub.aclose()
 

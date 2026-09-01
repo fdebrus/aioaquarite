@@ -22,42 +22,31 @@ from aioaquarite.subscription import ResilientUserPoolsSubscription
 # ── low-level subscribe_user_pools ────────────────────────────────────────
 
 
-class _FakeDoc:
-    def __init__(self, data: dict[str, Any] | None) -> None:
-        self._data = data
-
-    def to_dict(self) -> dict[str, Any] | None:
-        return self._data
-
-
-class _FakeDocRef:
-    def __init__(self) -> None:
-        self.on_snapshot_calls: list[Callable[..., None]] = []
-
-    def on_snapshot(self, cb: Callable[..., None]) -> object:
-        self.on_snapshot_calls.append(cb)
-        return object()  # stand-in for a Watch
+async def _wait_for(
+    predicate: "Callable[[], bool]", timeout: float = 2.0
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("condition not met within timeout")
+        await asyncio.sleep(0.01)
 
 
-class _FakeFirestoreClient:
-    def __init__(self, doc_ref: _FakeDocRef) -> None:
-        self._doc_ref = doc_ref
-        self.collection_calls: list[str] = []
-        self.document_calls: list[str] = []
-
-    def collection(self, name: str) -> "_FakeFirestoreClient":
-        self.collection_calls.append(name)
-        return self
-
-    def document(self, doc_id: str) -> _FakeDocRef:
-        self.document_calls.append(doc_id)
-        return self._doc_ref
+from ._fakes import (
+    HOLD,
+    FakeAsyncClient,
+    FakeGapic,
+    doc_change,
+    doc_path,
+    target_current,
+    target_no_change,
+)
 
 
-def _make_authenticated_auth(firestore_client: _FakeFirestoreClient) -> AquariteAuth:
-    """Build an AquariteAuth that hands back the fake firestore client.
+def _make_authenticated_auth(fs_client: FakeAsyncClient) -> AquariteAuth:
+    """Build an AquariteAuth that hands back the fake async client.
 
-    No real network or sign-in; ``get_client`` is patched directly.
+    No real network or sign-in; ``get_async_client`` is patched directly.
     """
     auth = AquariteAuth(MagicMock(), "user@example.com", "hunter2")
     auth.tokens = {
@@ -67,73 +56,97 @@ def _make_authenticated_auth(firestore_client: _FakeFirestoreClient) -> Aquarite
         "localId": "uid-abc",
     }
 
-    async def _get_client() -> tuple[_FakeFirestoreClient, int]:
-        return firestore_client, auth.token_generation
+    async def _get_async_client() -> FakeAsyncClient:
+        return fs_client
 
-    auth.get_client = _get_client  # type: ignore[method-assign]
+    auth.get_async_client = _get_async_client  # type: ignore[method-assign]
     return auth
 
 
 def test_subscribe_user_pools_invokes_callback_with_pool_ids() -> None:
     async def _run() -> None:
-        doc_ref = _FakeDocRef()
-        fs_client = _FakeFirestoreClient(doc_ref)
-        auth = _make_authenticated_auth(fs_client)
-        client = AquariteClient(auth)
+        gapic = FakeGapic()
+        fs_client = FakeAsyncClient(gapic)
+        user_doc = doc_path(fs_client, "users", "uid-abc")
+        gapic.scripts = [
+            [
+                doc_change(
+                    {"pools": ["pool-a", "pool-b", "pool-c"]}, name=user_doc
+                ),
+                target_current(),
+                HOLD,
+            ]
+        ]
+        client = AquariteClient(_make_authenticated_auth(fs_client))
 
         received: list[list[str]] = []
         watch = await client.subscribe_user_pools(received.append)
         assert watch is not None
 
-        # Right collection/document was hit.
-        assert fs_client.collection_calls == ["users"]
-        assert fs_client.document_calls == ["uid-abc"]
-
-        # Simulate Firestore firing a snapshot.
-        snap = [_FakeDoc({"pools": ["pool-a", "pool-b", "pool-c"]})]
-        doc_ref.on_snapshot_calls[0](snap, [], object())
+        # Right document was targeted, on the right database.
+        assert fs_client.document_calls == [("users", "uid-abc")]
+        request = gapic.captured_requests[0]
+        assert request.database == fs_client._database_string
+        assert list(request.add_target.documents.documents) == [user_doc]
 
         assert received == [["pool-a", "pool-b", "pool-c"]]
+        await watch.aclose()
 
     asyncio.run(_run())
 
 
 def test_subscribe_user_pools_empty_pools_list_yields_empty_list() -> None:
     async def _run() -> None:
-        doc_ref = _FakeDocRef()
-        fs_client = _FakeFirestoreClient(doc_ref)
+        gapic = FakeGapic()
+        fs_client = FakeAsyncClient(gapic)
+        user_doc = doc_path(fs_client, "users", "uid-abc")
+        gapic.scripts = [
+            [
+                # Document with no 'pools' key at all.
+                doc_change({"name": "someone"}, name=user_doc),
+                target_current(),
+                # Document with an explicit empty list.
+                doc_change({"pools": []}, name=user_doc),
+                target_no_change(resume_token=b"t1"),
+                HOLD,
+            ]
+        ]
         client = AquariteClient(_make_authenticated_auth(fs_client))
 
         received: list[list[str]] = []
-        await client.subscribe_user_pools(received.append)
+        watch = await client.subscribe_user_pools(received.append)
 
-        # Document with no 'pools' key.
-        doc_ref.on_snapshot_calls[0]([_FakeDoc({})], [], object())
-        # Document with explicit empty list.
-        doc_ref.on_snapshot_calls[0]([_FakeDoc({"pools": []})], [], object())
-        # Empty to_dict (deleted document).
-        doc_ref.on_snapshot_calls[0]([_FakeDoc(None)], [], object())
-
-        assert received == [[], [], []]
+        await _wait_for(lambda: len(received) >= 2)
+        assert received == [[], []]
+        await watch.aclose()
 
     asyncio.run(_run())
 
 
 def test_subscribe_user_pools_fans_out_across_multiple_snapshots() -> None:
     async def _run() -> None:
-        doc_ref = _FakeDocRef()
-        fs_client = _FakeFirestoreClient(doc_ref)
+        gapic = FakeGapic()
+        fs_client = FakeAsyncClient(gapic)
+        user_doc = doc_path(fs_client, "users", "uid-abc")
+        gapic.scripts = [
+            [
+                doc_change({"pools": ["a"]}, name=user_doc),
+                target_current(),
+                doc_change({"pools": ["a", "b"]}, name=user_doc),  # pool added
+                target_no_change(resume_token=b"t1"),
+                doc_change({"pools": ["b"]}, name=user_doc),  # pool removed
+                target_no_change(resume_token=b"t2"),
+                HOLD,
+            ]
+        ]
         client = AquariteClient(_make_authenticated_auth(fs_client))
 
         received: list[list[str]] = []
-        await client.subscribe_user_pools(received.append)
+        watch = await client.subscribe_user_pools(received.append)
 
-        cb = doc_ref.on_snapshot_calls[0]
-        cb([_FakeDoc({"pools": ["a"]})], [], object())
-        cb([_FakeDoc({"pools": ["a", "b"]})], [], object())  # pool added
-        cb([_FakeDoc({"pools": ["b"]})], [], object())  # pool removed
-
+        await _wait_for(lambda: len(received) >= 3)
         assert received == [["a"], ["a", "b"], ["b"]]
+        await watch.aclose()
 
     asyncio.run(_run())
 
@@ -145,12 +158,7 @@ def test_subscribe_user_pools_fans_out_across_multiple_snapshots() -> None:
 # user-pools variant.
 
 
-class _FakeWatch:
-    def __init__(self) -> None:
-        self.unsubscribed = False
-
-    def unsubscribe(self) -> None:
-        self.unsubscribed = True
+from ._fakes import FakeTaskWatch as _FakeWatch
 
 
 class _FakeAuth:
@@ -199,14 +207,6 @@ class _FakeClient:
         self.callbacks.append(callback)
         self.subscribe_event.set()
         return watch
-
-
-async def _wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("condition not met within timeout")
-        await asyncio.sleep(0.01)
 
 
 def _fast_sub(

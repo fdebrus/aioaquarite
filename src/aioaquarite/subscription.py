@@ -10,10 +10,10 @@ with a supervisor task that:
 * applies exponential backoff (default 10s → 600s) between reconnect
   attempts and resets the delay on success.
 
-User callbacks are invoked from the Firestore background thread (same
-threading model as the underlying ``subscribe_*`` methods). Callers
-running on an asyncio loop should hand data back via
-``loop.call_soon_threadsafe``.
+User callbacks are invoked on the event loop running the watch task
+(since 0.12.0 the listener is a native async task — no Firestore
+thread exists any more). Bridging with ``loop.call_soon_threadsafe``
+keeps working, it is simply no longer required.
 
 The optional ``on_health`` callback reports connection-state
 transitions: ``on_health(False)`` when the connection is lost and
@@ -30,9 +30,10 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
-if TYPE_CHECKING:
-    from google.cloud.firestore_v1.watch import Watch
+from ._watch import AsyncDocumentWatch
+from .exceptions import ConnectionError
 
+if TYPE_CHECKING:
     from .client import AquariteClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
         self._health_check_interval = health_check_interval
-        self._watch: Watch | None = None
+        self._watch: AsyncDocumentWatch | None = None
         self._token_generation: int | None = None
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
@@ -97,7 +98,7 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
         """Short identifier used in log lines and the task name."""
 
     @abc.abstractmethod
-    async def _subscribe_call(self) -> Watch:
+    async def _subscribe_call(self) -> AsyncDocumentWatch:
         """Invoke the underlying ``AquariteClient.subscribe_*`` method."""
 
     async def _start(self) -> None:
@@ -123,7 +124,7 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
             watch = self._watch
             self._watch = None
         if watch is not None:
-            await asyncio.to_thread(watch.unsubscribe)
+            await watch.aclose()
 
     async def _resubscribe(self, reason: str) -> None:
         _LOGGER.debug("Resubscribing %s (reason: %s)", self._label, reason)
@@ -137,12 +138,36 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
             sleep_for = min(sleep_for, self._health_check_interval)
         return sleep_for
 
+    async def _sleep_until_tick(self) -> None:
+        """Sleep until the next tick, waking early if the watch task ends.
+
+        A stream that ends or raises is a connection failure the moment it
+        happens — an async task ending is visible by construction, unlike
+        the silently dying gRPC thread this replaced.
+        """
+        timeout = self._next_sleep()
+        watch = self._watch
+        if watch is None:
+            await asyncio.sleep(timeout)
+            return
+        task = watch.task
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if task in done:
+            if task.cancelled():
+                raise ConnectionError(
+                    f"{self._label} watch task cancelled externally"
+                )
+            exc = task.exception()
+            if exc is not None:
+                raise exc
+            raise ConnectionError(f"{self._label} listen stream ended")
+
     async def _supervise(self) -> None:
         backoff = self._initial_backoff
         auth = self._client.auth
         while True:
             try:
-                await asyncio.sleep(self._next_sleep())
+                await self._sleep_until_tick()
 
                 if auth.is_token_expiring():
                     _LOGGER.debug(
@@ -229,7 +254,7 @@ class ResilientPoolSubscription(_ResilientSubscription[dict[str, Any]]):
     def _label(self) -> str:
         return f"pool {self._pool_id}"
 
-    async def _subscribe_call(self) -> Watch:
+    async def _subscribe_call(self) -> AsyncDocumentWatch:
         return await self._client.subscribe_pool(self._pool_id, self._callback)
 
 
@@ -245,5 +270,5 @@ class ResilientUserPoolsSubscription(_ResilientSubscription[list[str]]):
     def _label(self) -> str:
         return "user pools"
 
-    async def _subscribe_call(self) -> Watch:
+    async def _subscribe_call(self) -> AsyncDocumentWatch:
         return await self._client.subscribe_user_pools(self._callback)
