@@ -6,3 +6,6 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .venv/
+
+# Claude Code local settings (may contain credentials)
+.claude/settings.local.json
