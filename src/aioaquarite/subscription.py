@@ -250,6 +250,19 @@ class ResilientPoolSubscription(_ResilientSubscription[dict[str, Any]]):
         """The pool document ID this subscription is bound to."""
         return self._pool_id
 
+    async def aclose(self) -> None:
+        """Stop the subscription and release the pool's pending-write state.
+
+        Dropping the reconciler cancels its expiry timers and any
+        reconcile fetch, so nothing fires into a closed consumer.
+        """
+        if self._closed:
+            return
+        await super().aclose()
+        release = getattr(self._client, "_release_pending", None)
+        if release is not None:
+            release(self._pool_id)
+
     @property
     def _label(self) -> str:
         return f"pool {self._pool_id}"
