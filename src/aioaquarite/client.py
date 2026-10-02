@@ -157,6 +157,11 @@ class AquariteClient:
         Returns:
             An :class:`AsyncDocumentWatch`; call ``unsubscribe()`` (or
             ``await aclose()``) on it to stop listening.
+
+        A pool has a single subscriber: a second ``subscribe_pool`` for
+        the same pool replaces the previous callback as the delivery
+        target (this is what the resilient supervisor's resubscribes
+        rely on).
         """
         client = await self._auth.get_async_client()
         doc_ref = client.collection("pools").document(pool_id)

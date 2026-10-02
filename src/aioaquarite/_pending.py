@@ -158,8 +158,9 @@ class PendingWriteReconciler:
         Coalesces an identical repeat into the existing tail — an
         idempotent repeat causes no second document transition, so a
         second entry would wait for a confirmation that never comes.
-        The written value is mirrored into the stored pool data so
-        subsequent command payloads build on it; nothing is delivered.
+        Nothing is mirrored or delivered here: a pre-queued value the
+        cloud has not acknowledged must not reach the stored pool data,
+        where the next command payload on that branch would pick it up.
         """
         writes = self._writes.setdefault(value_path, [])
         now = monotonic()
@@ -172,8 +173,6 @@ class PendingWriteReconciler:
             writes[-1].sent = writes[-1].sent or sent
         else:
             writes.append(_PendingWrite(value, now, sent))
-        if (data := self._get_data()) is not None:
-            _set_path(data, value_path, value)
         self._arm_expiry(value_path)
 
     def on_write_success(self, updates: dict[str, Any]) -> None:
@@ -185,9 +184,19 @@ class PendingWriteReconciler:
         its TTL so the window covers the round trip of the actual send,
         not of queueing. With nothing pre-queued, the value is recorded
         as an ordinary acknowledged write.
+
+        The overlaid data is delivered immediately: consumers reflect a
+        write the moment the cloud acks it instead of waiting out the
+        Firestore echo. That same overlay pass is what lands values in
+        the stored pool data — only here, on acknowledgement, never at
+        queueing — so the next command payload builds on acked state.
+        Per the overlay rule the delivery carries each path's newest
+        pending value: a pulse's off send delivers the final on.
         """
         for value_path, value in updates.items():
             self._claim_or_record(value_path, value)
+        if (data := self._get_data()) is not None:
+            self._deliver(self.overlay(data, confirm=False))
 
     def _claim_or_record(self, value_path: str, value: Any) -> None:
         writes = self._writes.get(value_path, [])
@@ -196,6 +205,7 @@ class PendingWriteReconciler:
             writes.pop(0)
         if not writes:
             self._clear(value_path)
+        claimed = False
         for write in writes:
             if not write.sent:
                 # If a snapshot confirmed the queued head early (the
@@ -208,8 +218,10 @@ class PendingWriteReconciler:
                 if write is writes[-1]:
                     write.written_at = monotonic()
                     self._arm_expiry(value_path)
-                return
-        self.record(value_path, value, sent=True)
+                claimed = True
+                break
+        if not claimed:
+            self.record(value_path, value, sent=True)
 
     def refresh(self, value_path: str) -> None:
         """Restart the newest pending write's protection window.

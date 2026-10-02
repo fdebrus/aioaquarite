@@ -259,9 +259,7 @@ class ResilientPoolSubscription(_ResilientSubscription[dict[str, Any]]):
         if self._closed:
             return
         await super().aclose()
-        release = getattr(self._client, "_release_pending", None)
-        if release is not None:
-            release(self._pool_id)
+        self._client._release_pending(self._pool_id)
 
     @property
     def _label(self) -> str:

@@ -409,6 +409,8 @@ def test_expiry_redelivers_raw_snapshot_then_fetches() -> None:
             h.client._fetch_pool_document = fetch  # type: ignore[method-assign]
 
             await h.client.set_value(POOL_ID, PATH, 1)
+            assert h.received and h.light(h.received[-1]) == 1  # ack delivery
+            h.received.clear()
             await _wait_for(lambda: len(h.received) >= 2)
 
             # First the last raw snapshot un-overlaid, then the fetch result.
@@ -442,6 +444,7 @@ def test_expiry_redelivery_keeps_other_paths_overlays() -> None:
             await h.client.set_value(POOL_ID, PATH, 1)
             clock["now"] = 109.0
             await h.client.set_value(POOL_ID, "filtration.intel.temp", 27)
+            h.received.clear()  # drop the ack deliveries
 
             # Fire the light write's expiry by hand at its own deadline.
             clock["now"] = 111.0
@@ -474,6 +477,7 @@ def test_expiry_redelivery_cannot_confirm_other_paths() -> None:
             clock["now"] = 109.0
             await h.client.set_value(POOL_ID, PATH, 1)
             await h.client.set_value(POOL_ID, PATH, 0)
+            h.received.clear()  # drop the ack deliveries
 
             # The reconcile fetch hangs: only the redelivery pass and the
             # pushes below may touch the queues.
@@ -487,7 +491,7 @@ def test_expiry_redelivery_cannot_confirm_other_paths() -> None:
             clock["now"] = 100.0 + _pending.PENDING_WRITE_TTL_SECONDS
             h.client._pending(POOL_ID)._expire("main.other")
             await _wait_for(lambda: len(h.received) >= 1)
-            assert h.light(h.received[0]) == 0  # overlaid, not confirmed
+            assert h.light(h.received[-1]) == 0  # overlaid, not confirmed
 
             # With the head wrongly confirmed, this echo pair would end
             # delivering 1; in order it must settle on the pending 0.
@@ -657,11 +661,20 @@ def test_manual_fetch_result_is_overlaid() -> None:
 
 
 def test_pulse_never_delivers_the_intermediate_off() -> None:
-    """Echoes landing inside the pulse delay are overlaid with the final
-    on, so subscribers never see the transient off."""
+    """Ack deliveries and echoes landing inside the pulse delay are all
+    overlaid with the final on, so subscribers never see the transient off.
+
+    Values are captured at callback time: ack deliveries hand out the
+    live pool-data dict, so inspecting stored entries afterwards would
+    miss a transient value that a later delivery overwrote in place.
+    """
 
     async def _run() -> None:
         h = await _start({"light": {"status": 1}})
+        seen: list[Any] = []
+        h.client._pool_subscribers[POOL_ID] = lambda data: seen.append(
+            h.light(data)
+        )
 
         async def _echo_during_off(payload: dict[str, Any]) -> None:
             if '"status": 0' in payload["changes"]:
@@ -670,9 +683,43 @@ def test_pulse_never_delivers_the_intermediate_off() -> None:
 
         h.client.send_command.side_effect = _echo_during_off
         await h.client.pulse(POOL_ID, PATH, 0, 1, 0.05)
-        await _wait_for(lambda: len(h.received) >= 2)
+        await _wait_for(lambda: len(seen) >= 4)  # 2 acks + 2 echoes
 
-        assert [h.light(entry) for entry in h.received] == [1, 1]
+        assert seen == [1] * len(seen)
+        assert h.client.get_pool_data(POOL_ID)["light"]["status"] == 1
+        await h.aclose()
+
+    asyncio.run(_run())
+
+
+def test_acknowledged_write_is_delivered_immediately() -> None:
+    """The cloud ack is the moment consumers must reflect a write — not
+    the Firestore echo seconds later. The delivery carries the overlaid
+    pool data."""
+
+    async def _run() -> None:
+        h = await _start({"light": {"status": 0}})
+        await h.client.set_value(POOL_ID, PATH, 1)
+
+        assert h.received and h.light(h.received[-1]) == 1
+        await h.aclose()
+
+    asyncio.run(_run())
+
+
+def test_unsent_prequeued_value_never_enters_the_payload_cache() -> None:
+    """record_pending must not mirror: a value the cloud never accepted
+    cannot be promoted into the next command payload on that branch, and
+    a failed sequence leaves the cache clean."""
+
+    async def _run() -> None:
+        h = await _start({"light": {"status": 1}})
+        h.client.record_pending(POOL_ID, PATH, 0)
+
+        assert h.client.get_pool_data(POOL_ID)["light"]["status"] == 1
+        assert h.received == []  # queueing is silent too
+
+        h.client.discard_pending(POOL_ID, PATH)
         assert h.client.get_pool_data(POOL_ID)["light"]["status"] == 1
         await h.aclose()
 

@@ -11,7 +11,12 @@
   command path and the listener:
   - `set_value` / `set_values` record acknowledged writes as pending
     (per-path ordered queues, 10 s per-write TTL, idempotent repeats
-    coalesced). No consumer code change needed.
+    coalesced) and deliver the overlaid data to the pool's subscriber
+    immediately, so consumers reflect a write on the cloud ack instead
+    of the Firestore echo seconds later. Values enter the stored pool
+    data only on acknowledgement — a pre-queued value whose send fails
+    can never reach the next command payload. No consumer code change
+    needed.
   - Snapshots — and `fetch_pool_data` results — confirm pending writes in
     order and are delivered with the newest pending value overlaid, so a
     stale echo can no longer flicker consumer state.

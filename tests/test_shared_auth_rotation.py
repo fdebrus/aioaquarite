@@ -73,6 +73,9 @@ class _SharedClient:
         self.pool_watches: dict[str, list[_FakeWatch]] = {}
         self.user_pool_watches: list[_FakeWatch] = []
 
+
+    def _release_pending(self, pool_id: str) -> None:
+        self.released = getattr(self, "released", 0) + 1
     async def subscribe_pool(
         self, pool_id: str, callback: Callable[[dict[str, Any]], None]
     ) -> _FakeWatch:

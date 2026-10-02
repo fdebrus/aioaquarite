@@ -109,7 +109,10 @@ Since 0.13.0 the library reconciles the two sides itself, so consumers never
 see a toggle flicker back:
 
 - **Every acknowledged write is queued as pending**, per `(pool, path)`,
-  with its own timestamp. `set_value` / `set_values` do this automatically —
+  with its own timestamp, and **delivered immediately**: the subscriber
+  callback fires with the overlaid data the moment the cloud acks the
+  command, so consumers reflect a write without waiting out the 5–10 s
+  Firestore echo. `set_value` / `set_values` do all of this automatically —
   no consumer code needed.
 - **Snapshots confirm pending writes in order.** The queue head is popped
   when the snapshot agrees with it (tolerantly — Firestore returns
