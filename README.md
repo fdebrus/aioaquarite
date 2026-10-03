@@ -142,6 +142,10 @@ see a toggle flicker back:
 Everything runs on the event loop (the library has had no threads since
 0.12), so the only locks are `asyncio` ones.
 
+Delivered dicts may be mutated by the library before the next delivery
+(an acknowledged write overlays the same data it last handed out) —
+treat them as read-only and copy anything you need to keep.
+
 ### Multi-step write sequences
 
 A sequence like an LED colour pulse (off, wait, on) needs its transient
