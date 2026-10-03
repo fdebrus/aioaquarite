@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+- **Write/snapshot reconciliation moved into the library.** Hayward's cloud
+  acks a REST command seconds before Firestore reflects it; a snapshot in
+  that window genuinely carries the pre-write state. Both Home Assistant
+  integrations carried the same suppression heuristic in their
+  coordinators — it now lives here, where the library can see both the
+  command path and the listener:
+  - `set_value` / `set_values` record acknowledged writes as pending
+    (per-path ordered queues, 10 s per-write TTL, idempotent repeats
+    coalesced) and deliver the overlaid data to the pool's subscriber
+    immediately, so consumers reflect a write on the cloud ack instead
+    of the Firestore echo seconds later. Values enter the stored pool
+    data only on acknowledgement — a pre-queued value whose send fails
+    can never reach the next command payload. No consumer code change
+    needed.
+  - Snapshots — and `fetch_pool_data` results — confirm pending writes in
+    order and are delivered with the newest pending value overlaid, so a
+    stale echo can no longer flicker consumer state.
+  - TTL expiry without confirmation re-delivers the last raw snapshot
+    (last-known truth, no availability flap) and then delivers an
+    authoritative fetch, retrying failures with backoff; a new snapshot
+    cancels it. `on_health` is untouched — the stream itself is alive.
+  - An in-flight `fetch_pool_data` superseded by a snapshot or reconcile
+    fetch returns the newer state instead of its stale read, on the
+    failure path too.
+- New sequence helpers: `pulse(pool_id, path, off, on, delay)` (flicker-free
+  power-cycle, e.g. for LED colour advance), `write_lock(pool_id, path)`,
+  `record_pending`, `discard_pending`, `refresh_pending`, and
+  `reconcile(pool_id)`.
+
+### Changed
+- `ResilientPoolSubscription.aclose()` also releases the pool's pending
+  write state (expiry timers, reconcile task), so nothing fires into a
+  closed consumer.
+- `set_value` / `set_values` writing below a non-dict node in the cached
+  pool data now replace that node instead of raising ``TypeError``.
+
+### Unchanged
+- Every existing signature. Consumers that still run their own optimistic
+  machinery keep working — with nothing pre-queued the library's queues
+  confirm in parallel and snapshots with no pending writes are delivered
+  unmodified.
+
 ## 0.12.2
 
 ### Changed

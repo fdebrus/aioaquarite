@@ -9,6 +9,7 @@ from typing import Any, Callable, MutableMapping
 import aiohttp
 
 from ._coercion import normalise as _normalise
+from ._pending import PendingWriteReconciler
 from ._watch import AsyncDocumentWatch
 from .auth import AquariteAuth
 from .const import DEFAULT_HTTP_TIMEOUT, HAYWARD_REST_API
@@ -31,6 +32,11 @@ class AquariteClient:
         self._auth = auth
         self._pool_data: dict[str, dict[str, Any]] = {}
         self._branch_locks: dict[tuple[str, tuple[str, ...]], asyncio.Lock] = {}
+        # Write/snapshot reconciliation, one reconciler per pool: pending
+        # acknowledged writes, their expiry timers, and the authoritative
+        # reconcile fetch. See aioaquarite._pending for the model.
+        self._reconcilers: dict[str, PendingWriteReconciler] = {}
+        self._pool_subscribers: dict[str, Callable[[dict[str, Any]], None]] = {}
         # Firestore resume tokens, keyed by document path. Successive
         # watches of the same document resume where the last one stopped
         # instead of replaying from scratch.
@@ -48,6 +54,37 @@ class AquariteClient:
     def get_pool_data(self, pool_id: str) -> dict[str, Any] | None:
         """Return stored pool data."""
         return self._pool_data.get(pool_id)
+
+    def _pending(self, pool_id: str) -> PendingWriteReconciler:
+        """The pool's write/snapshot reconciler, created on first use."""
+        reconciler = self._reconcilers.get(pool_id)
+        if reconciler is None:
+            reconciler = PendingWriteReconciler(
+                f"pool {pool_id}",
+                lambda: self._fetch_pool_document(pool_id),
+                lambda: self._pool_data.get(pool_id),
+                lambda data: self._deliver_pool_data(pool_id, data),
+            )
+            self._reconcilers[pool_id] = reconciler
+        return reconciler
+
+    def _deliver_pool_data(self, pool_id: str, data: dict[str, Any]) -> None:
+        """Store reconciled data and forward it to the pool's subscriber."""
+        self._pool_data[pool_id] = data
+        callback = self._pool_subscribers.get(pool_id)
+        if callback is None:
+            return
+        try:
+            callback(data)
+        except Exception:  # noqa: BLE001 — a consumer bug must not kill delivery
+            _LOGGER.exception("pool %s: data callback failed", pool_id)
+
+    def _release_pending(self, pool_id: str) -> None:
+        """Drop the pool's reconciler and subscriber on final close."""
+        reconciler = self._reconcilers.pop(pool_id, None)
+        if reconciler is not None:
+            reconciler.close()
+        self._pool_subscribers.pop(pool_id, None)
 
     async def get_pools(self) -> dict[str, str]:
         """Fetch all pools for the authenticated user.
@@ -73,11 +110,37 @@ class AquariteClient:
         return pools
 
     async def fetch_pool_data(self, pool_id: str) -> dict[str, Any]:
-        """Fetch the full pool document from Firestore."""
+        """Fetch the full pool document from Firestore.
+
+        The result is reconciled against pending acknowledged writes the
+        same way snapshots are, and a snapshot (or reconcile fetch) that
+        lands while this fetch is in flight supersedes it: the newer
+        state is returned instead of the stale read — on the failure
+        path too, so a late error cannot shadow data that already
+        arrived.
+        """
+        reconciler = self._pending(pool_id)
+        generation = reconciler.generation
+        try:
+            data = await self._fetch_pool_document(pool_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if generation != reconciler.generation:
+                return self._pool_data.get(pool_id) or {}
+            raise
+        if generation != reconciler.generation:
+            return self._pool_data.get(pool_id) or {}
+        reconciler.note_authoritative_fetch(data)
+        merged = reconciler.overlay(data, confirm=True)
+        self._pool_data[pool_id] = merged
+        return merged
+
+    async def _fetch_pool_document(self, pool_id: str) -> dict[str, Any]:
+        """Read the raw pool document from Firestore (no reconciliation)."""
         client = await self._auth.get_async_client()
         pool_doc = await client.collection("pools").document(pool_id).get()
         data: dict[str, Any] = pool_doc.to_dict() or {}
-        self._pool_data[pool_id] = data
         return data
 
     async def subscribe_pool(
@@ -94,18 +157,21 @@ class AquariteClient:
         Returns:
             An :class:`AsyncDocumentWatch`; call ``unsubscribe()`` (or
             ``await aclose()``) on it to stop listening.
+
+        A pool has a single subscriber: a second ``subscribe_pool`` for
+        the same pool replaces the previous callback as the delivery
+        target (this is what the resilient supervisor's resubscribes
+        rely on).
         """
         client = await self._auth.get_async_client()
         doc_ref = client.collection("pools").document(pool_id)
 
-        def _on_data(data: dict[str, Any]) -> None:
-            self._pool_data[pool_id] = data
-            callback(data)
-
+        reconciler = self._pending(pool_id)
+        self._pool_subscribers[pool_id] = callback
         watch = AsyncDocumentWatch(
             client,
             doc_ref._document_path,
-            _on_data,
+            reconciler.on_snapshot,
             resume_tokens=self._resume_tokens,
             label=f"pool {pool_id}",
         )
@@ -429,10 +495,114 @@ class AquariteClient:
         _LOGGER.debug("set_values pool_id=%s updates=%s", pool_id, effective)
         await self.send_command(payload)
 
-        # Mirror the accepted changes into the stored pool data so the
-        # next command payload is built from the state the cloud now has.
-        for path, value in effective.items():
-            self._set_in_dict(pool_data, path, value)
+        # The cloud acknowledged the write: record every written path as
+        # pending so snapshots that predate it cannot flicker consumers'
+        # state, and mirror the values into the stored pool data so the
+        # next command payload is built on the acknowledged state.
+        self._pending(pool_id).on_write_success(effective)
+
+    # ── write/snapshot reconciliation helpers ────────────────
+
+    def write_lock(self, pool_id: str, value_path: str) -> asyncio.Lock:
+        """The lock serialising writers of one value path.
+
+        Writers sharing a path (an entity and a pulse sequence, say)
+        must keep the pending-write order identical to the wire order,
+        or confirmations would overlay values the controller no longer
+        has. Hold it across a multi-send sequence; single ``set_value``
+        calls need no extra locking (the per-branch command lock already
+        serialises them).
+        """
+        return self._pending(pool_id).lock(value_path)
+
+    def record_pending(self, pool_id: str, value_path: str, value: Any) -> None:
+        """Queue a value as pending **without sending it**.
+
+        For pre-queued write sequences (a pulse queues its off and on
+        before the first send): the Firestore echoes are then confirmed
+        in order, and any snapshot landing mid-sequence is overlaid with
+        the final value instead of a transient one. The send that later
+        succeeds claims the queued entry — ``set_value`` will not record
+        a duplicate — and restarts its TTL at that moment. Call under
+        :meth:`write_lock`.
+        """
+        self._pending(pool_id).record(value_path, value, sent=False)
+
+    def discard_pending(self, pool_id: str, value_path: str) -> None:
+        """Drop the newest pending write for a path.
+
+        For unwinding a pre-queued write whose send failed: it must not
+        keep suppressing the snapshots that reflect what the cloud
+        really has. Expiry re-arms from the surviving tail's own
+        timestamp. Consider :meth:`reconcile` afterwards if an echo may
+        already have been consumed mid-sequence.
+        """
+        self._pending(pool_id).discard(value_path)
+
+    def refresh_pending(self, pool_id: str, value_path: str) -> None:
+        """Restart the newest pending write's TTL window.
+
+        For a write queued long before its send: the window must cover
+        the round trip of the actual send, not of queueing.
+        """
+        self._pending(pool_id).refresh(value_path)
+
+    def reconcile(self, pool_id: str) -> None:
+        """Fetch authoritative pool data in the background and deliver it.
+
+        Used after a write sequence failed halfway: the local prediction
+        is then unreliable, so the truth is fetched and delivered to the
+        pool's subscriber. Failures retry with backoff; a new snapshot
+        cancels the retry.
+        """
+        self._pending(pool_id).start_reconcile()
+
+    async def pulse(
+        self,
+        pool_id: str,
+        value_path: str,
+        off_value: Any,
+        on_value: Any,
+        delay: float,
+    ) -> None:
+        """Power-cycle one value without ever exposing the transient state.
+
+        Sends ``off_value``, waits ``delay`` seconds, then sends
+        ``on_value`` — the sequence a pool LED fixture needs to advance
+        its colour. Both writes are queued as pending before the first
+        send, so their Firestore echoes are confirmed in order and a
+        snapshot landing inside the delay is delivered carrying the
+        final ``on_value``: subscribers never see the intermediate
+        ``off_value``. A failed send discards the writes the cloud never
+        acknowledged and reconciles with an authoritative fetch; the
+        final write's TTL is restarted after its own send so the window
+        covers that round trip.
+
+        The sequence holds :meth:`write_lock` for the path throughout,
+        so concurrent writers queue behind it instead of interleaving.
+        """
+        reconciler = self._pending(pool_id)
+        async with reconciler.lock(value_path):
+            reconciler.record(value_path, off_value, sent=False)
+            reconciler.record(value_path, on_value, sent=False)
+            try:
+                await self.set_value(pool_id, value_path, off_value)
+            except BaseException:
+                # Neither write reached the cloud; a snapshot consumed
+                # mid-send may have been overlaid with a queued value
+                # that just got discarded, so fetch the truth.
+                reconciler.discard(value_path)
+                reconciler.discard(value_path)
+                reconciler.start_reconcile()
+                raise
+            try:
+                await asyncio.sleep(delay)
+                await self.set_value(pool_id, value_path, on_value)
+            except BaseException:
+                reconciler.discard(value_path)
+                reconciler.start_reconcile()
+                raise
+            reconciler.refresh(value_path)
 
     # ── helpers ──────────────────────────────────────────────
 
@@ -453,10 +623,18 @@ class AquariteClient:
     def _set_in_dict(
         data_dict: MutableMapping[str, Any], path: str, value: Any
     ) -> None:
-        """Set a value in a nested dict using dot-notation path."""
+        """Set a value in a nested dict using dot-notation path.
+
+        A non-dict intermediate node is replaced: the write targets a key
+        below it, so whatever scalar the cloud had there is stale.
+        """
         keys = path.split(".")
         for key in keys[:-1]:
-            data_dict = data_dict.setdefault(key, {})
+            child = data_dict.get(key)
+            if not isinstance(child, dict):
+                child = {}
+                data_dict[key] = child
+            data_dict = child
         data_dict[keys[-1]] = value
 
     @staticmethod

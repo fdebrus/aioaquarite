@@ -54,6 +54,9 @@ class _FakeClient:
         self.subscribe_event = asyncio.Event()
         self.subscribe_raise: Exception | None = None
 
+
+    def _release_pending(self, pool_id: str) -> None:
+        self.released = getattr(self, "released", 0) + 1
     async def subscribe_pool(
         self, pool_id: str, callback: Callable[[dict[str, Any]], None]
     ) -> _FakeWatch:

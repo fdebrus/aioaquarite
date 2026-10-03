@@ -21,6 +21,26 @@ from aioaquarite._watch import TARGET_ID
 # Sentinel script entry: keep the response stream open (until cancelled).
 HOLD = object()
 
+
+class Feed:
+    """A live script item: the stream yields responses pushed at runtime.
+
+    Unlike a pre-canned script, a Feed lets a test deliver snapshots
+    mid-test — push ListenResponse protos (or an Exception to raise) and
+    the fake stream yields them in order; ``end()`` ends the stream.
+    """
+
+    _END = object()
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+
+    def push(self, item: Any) -> None:
+        self.queue.put_nowait(item)
+
+    def end(self) -> None:
+        self.queue.put_nowait(self._END)
+
 _TCT = TargetChange.TargetChangeType
 
 
@@ -96,6 +116,14 @@ class _FakeTransport:
             for item in script:
                 if item is HOLD:
                     await asyncio.Event().wait()
+                elif isinstance(item, Feed):
+                    while True:
+                        nxt = await item.queue.get()
+                        if nxt is Feed._END:
+                            break
+                        if isinstance(nxt, Exception):
+                            raise nxt
+                        yield nxt
                 elif isinstance(item, Exception):
                     raise item
                 else:

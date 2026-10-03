@@ -99,6 +99,87 @@ methods immediately update the client's local pool-data cache, so the next
 command is built from the state the cloud just acknowledged rather than a
 stale Firestore snapshot.
 
+## Write/snapshot reconciliation
+
+Hayward's cloud acknowledges a REST command (HTTP 200) 5–10 seconds before
+the Firestore document reflects it. A snapshot emitted in that window
+genuinely carries the pre-write state, and no timestamp or ordering can tell
+such an echo from a real external change (someone pressing the controller).
+Since 0.13.0 the library reconciles the two sides itself, so consumers never
+see a toggle flicker back:
+
+- **Every acknowledged write is queued as pending**, per `(pool, path)`,
+  with its own timestamp, and **delivered immediately**: the subscriber
+  callback fires with the overlaid data the moment the cloud acks the
+  command, so consumers reflect a write without waiting out the 5–10 s
+  Firestore echo. `set_value` / `set_values` do all of this automatically —
+  no consumer code needed.
+- **Snapshots confirm pending writes in order.** The queue head is popped
+  when the snapshot agrees with it (tolerantly — Firestore returns
+  int/str/bool variants); a later write is never confirmed while an earlier
+  one is pending, so a pre-write echo cannot lift protection.
+- **Delivered data carries the newest pending value** for each protected
+  path (the snapshot is overlaid), on the resilient subscriptions, the
+  low-level `subscribe_pool`, and `fetch_pool_data` alike.
+- **Each write ages out on its own timestamp** (TTL 10 s —
+  `aioaquarite._pending.PENDING_WRITE_TTL_SECONDS`, a module constant by
+  design, not a consumer knob). An identical repeated write coalesces into
+  the existing entry: an idempotent repeat causes no second document
+  transition, so a second entry would wait for a confirmation that never
+  comes. A snapshot that just pruned an expired write cannot confirm the
+  next one on the same pass — it may itself be a pre-write echo.
+- **Expiry without confirmation reconciles with the truth**: the overlay is
+  dropped and the last raw snapshot re-delivered immediately (last-known
+  truth — consumers keep their entities available, no "unavailable" flap),
+  then an authoritative fetch runs and its result is delivered. A failed
+  fetch retries with backoff (2 s doubling to 60 s); a new snapshot cancels
+  the fetch and the retry. The listen stream itself is alive throughout, so
+  `on_health` is never involved.
+- **An in-flight `fetch_pool_data` cannot regress newer state**: if a
+  snapshot (or reconcile fetch) lands while it is reading, the newer state
+  is returned instead of the stale read — on the failure path too.
+
+Everything runs on the event loop (the library has had no threads since
+0.12), so the only locks are `asyncio` ones.
+
+Delivered dicts may be mutated by the library before the next delivery
+(an acknowledged write overlays the same data it last handed out) —
+treat them as read-only and copy anything you need to keep.
+
+### Multi-step write sequences
+
+A sequence like an LED colour pulse (off, wait, on) needs its transient
+value protected *before* the first send, so a snapshot landing mid-sequence
+is overlaid with the final value instead of the intermediate one. The
+built-in helper does the whole dance:
+
+```python
+# Power-cycle light.status 1 → 0 → wait 1 s → 1, with no visible off.
+await client.pulse(pool_id, "light.status", 0, 1, 1.0)
+```
+
+It pre-queues both writes, holds the path's write lock across the sends
+(so another writer cannot interleave and break queue-order == wire-order),
+restarts the final write's TTL after its own send, and on a failed send
+discards the never-acknowledged writes and reconciles with an authoritative
+fetch.
+
+For custom sequences the same primitives are public:
+
+```python
+async with client.write_lock(pool_id, "light.status"):
+    client.record_pending(pool_id, "light.status", 0)   # queue, don't send
+    client.record_pending(pool_id, "light.status", 1)
+    await client.set_value(pool_id, "light.status", 0)  # claims the queued 0
+    await asyncio.sleep(1.0)
+    await client.set_value(pool_id, "light.status", 1)  # claims the queued 1
+    client.refresh_pending(pool_id, "light.status")     # TTL from this send
+```
+
+On failure, `client.discard_pending(pool_id, path)` drops the newest queued
+write (expiry re-arms from the surviving tail), and `client.reconcile(pool_id)`
+fetches the authoritative state in the background and delivers it.
+
 ## Real-time updates
 
 Subscribe with built-in token refresh and automatic reconnect (recommended).
