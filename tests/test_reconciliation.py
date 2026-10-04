@@ -10,6 +10,7 @@ pushes of real ``ListenResponse`` protos) and a fake REST endpoint
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -162,6 +163,65 @@ def test_values_agree_tolerates_firestore_variants() -> None:
     asyncio.run(_run())
 
 
+def test_ttl_covers_the_observed_confirmation_latency() -> None:
+    """Pin the incident of 2026-10-04: a successful write was confirmed
+    12.3 s after its acknowledgement, and the then-10 s TTL reported it
+    lost in between (a 2.3 s false OFF). The window must keep margin
+    above the observed worst case."""
+    assert _pending.PENDING_WRITE_TTL_SECONDS > 12.3
+
+
+def test_confirmation_logs_elapsed_time_since_acknowledgement(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every in-order confirmation logs how long the echo took — the data
+    that lets the TTL be set from the real latency distribution."""
+
+    async def _run() -> None:
+        clock = {"now": 100.0}
+        with patch.object(_pending, "monotonic", side_effect=lambda: clock["now"]):
+            h = await _start({"light": {"status": 0}})
+            await h.client.set_value(POOL_ID, PATH, 1)  # acknowledged at t=100
+
+            clock["now"] = 112.3
+            await h.pushed({"light": {"status": 1}})  # the confirming echo
+            await h.aclose()
+
+    with caplog.at_level(logging.DEBUG, logger="aioaquarite._pending"):
+        asyncio.run(_run())
+
+    assert (
+        "light.status confirmed 12.3 s after acknowledgement" in caplog.text
+    )
+
+
+def test_expiry_logs_age_of_the_unconfirmed_write(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Expiries log the write's age in the same unit as confirmations, so
+    one grep shows both sides of the latency distribution."""
+
+    async def _run() -> None:
+        clock = {"now": 100.0}
+        with patch.object(_pending, "monotonic", side_effect=lambda: clock["now"]):
+            h = await _start({"light": {"status": 0}})
+            fetch = AsyncMock(return_value={"light": {"status": 0}})
+            h.client._fetch_pool_document = fetch  # type: ignore[method-assign]
+            await h.client.set_value(POOL_ID, PATH, 1)  # acknowledged at t=100
+
+            clock["now"] = 100.0 + _pending.PENDING_WRITE_TTL_SECONDS
+            h.client._pending(POOL_ID)._expire(PATH)
+            await h.aclose()
+
+    with caplog.at_level(logging.DEBUG, logger="aioaquarite._pending"):
+        asyncio.run(_run())
+
+    assert (
+        f"expired unconfirmed after "
+        f"{_pending.PENDING_WRITE_TTL_SECONDS:.1f} s" in caplog.text
+    )
+
+
 # ── invariant 4: per-write aging ──────────────────────────────────────────
 
 
@@ -194,6 +254,7 @@ def test_sustained_writing_cannot_keep_old_entries_alive() -> None:
     continues."""
 
     async def _run() -> None:
+        ttl = _pending.PENDING_WRITE_TTL_SECONDS
         clock = {"now": 100.0}
         with patch.object(_pending, "monotonic", side_effect=lambda: clock["now"]):
             h = await _start({"light": {"status": 0}})
@@ -204,16 +265,16 @@ def test_sustained_writing_cannot_keep_old_entries_alive() -> None:
             await h.client.set_value(POOL_ID, PATH, 3)
 
             # Head (1) is dead; this pass prunes it and may confirm nothing.
-            clock["now"] = 111.0
+            clock["now"] = 100.0 + ttl + 1.0
             assert h.light(await h.pushed({"light": {"status": 2}})) == 3
             # Now 2 is the head and this snapshot confirms it in order.
-            clock["now"] = 112.0
+            clock["now"] = 100.0 + ttl + 2.0
             assert h.light(await h.pushed({"light": {"status": 2}})) == 3
-            clock["now"] = 113.0
+            clock["now"] = 100.0 + ttl + 3.0
             assert h.light(await h.pushed({"light": {"status": 3}})) == 3
             # Queue empty: the real remote change applies well before the
             # newest write's own TTL would have allowed under queue-aging.
-            clock["now"] = 114.0
+            clock["now"] = 100.0 + ttl + 4.0
             assert h.light(await h.pushed({"light": {"status": 9}})) == 9
             await h.aclose()
 

@@ -44,9 +44,15 @@ _LOGGER = logging.getLogger(__name__)
 
 # Fallback for when a confirming Firestore push never arrives (controller
 # offline, command dropped); a confirming snapshot normally clears the
-# pending entry well before this. Module constant by design — not a
+# pending entry well before this. The first production measurement put a
+# successful confirmation at 12.3 s after the ack, so the window carries
+# margin above the observed worst case — a write the cloud is merely slow
+# to apply must not be reported as lost. Trade-off: a write the cloud
+# genuinely lost now stays displayed for 30 s before the reconcile fetch
+# corrects it (rare, benign) instead of a slow-but-successful write
+# flickering (common, user-visible). Module constant by design — not a
 # consumer-facing knob.
-PENDING_WRITE_TTL_SECONDS = 10.0
+PENDING_WRITE_TTL_SECONDS = 30.0
 
 # Backoff for the authoritative fetch after a pending write expired
 # unconfirmed: first retry delay, doubling up to the cap.
@@ -301,7 +307,13 @@ class PendingWriteReconciler:
                 and not pruned
                 and _values_agree(remote_value, writes[0].value)
             ):
-                writes.pop(0)
+                confirmed = writes.pop(0)
+                _LOGGER.debug(
+                    "%s: %s confirmed %.1f s after acknowledgement",
+                    self._label,
+                    value_path,
+                    now - confirmed.written_at,
+                )
                 if not writes:
                     self._clear(value_path)
                     continue
@@ -327,12 +339,15 @@ class PendingWriteReconciler:
         available instead of flapping — then an authoritative fetch runs.
         """
         self._expiry_handles.pop(value_path, None)
-        if self._writes.pop(value_path, None) is None:
+        writes = self._writes.pop(value_path, None)
+        if writes is None:
             return
         _LOGGER.debug(
-            "%s: pending write for %s expired unconfirmed; reconciling",
+            "%s: pending write for %s expired unconfirmed after %.1f s;"
+            " reconciling",
             self._label,
             value_path,
+            monotonic() - writes[0].written_at,
         )
         if self._last_raw is not None:
             # Other paths may still be inside their own TTL window: keep

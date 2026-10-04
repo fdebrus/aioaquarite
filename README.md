@@ -101,8 +101,9 @@ stale Firestore snapshot.
 
 ## Write/snapshot reconciliation
 
-Hayward's cloud acknowledges a REST command (HTTP 200) 5–10 seconds before
-the Firestore document reflects it. A snapshot emitted in that window
+Hayward's cloud acknowledges a REST command (HTTP 200) well before the
+Firestore document reflects it — observed latency runs from a few seconds
+to over ten (12.3 s measured in production). A snapshot emitted in that window
 genuinely carries the pre-write state, and no timestamp or ordering can tell
 such an echo from a real external change (someone pressing the controller).
 Since 0.13.0 the library reconciles the two sides itself, so consumers never
@@ -111,8 +112,8 @@ see a toggle flicker back:
 - **Every acknowledged write is queued as pending**, per `(pool, path)`,
   with its own timestamp, and **delivered immediately**: the subscriber
   callback fires with the overlaid data the moment the cloud acks the
-  command, so consumers reflect a write without waiting out the 5–10 s
-  Firestore echo. `set_value` / `set_values` do all of this automatically —
+  command, so consumers reflect a write without waiting out the
+  Firestore echo seconds later. `set_value` / `set_values` do all of this automatically —
   no consumer code needed.
 - **Snapshots confirm pending writes in order.** The queue head is popped
   when the snapshot agrees with it (tolerantly — Firestore returns
@@ -121,9 +122,12 @@ see a toggle flicker back:
 - **Delivered data carries the newest pending value** for each protected
   path (the snapshot is overlaid), on the resilient subscriptions, the
   low-level `subscribe_pool`, and `fetch_pool_data` alike.
-- **Each write ages out on its own timestamp** (TTL 10 s —
+- **Each write ages out on its own timestamp** (TTL 30 s —
   `aioaquarite._pending.PENDING_WRITE_TTL_SECONDS`, a module constant by
-  design, not a consumer knob). An identical repeated write coalesces into
+  design, not a consumer knob — set with margin above the observed
+  confirmation latency, so a write the cloud is merely slow to apply is
+  not reported as lost; a genuinely lost write stays displayed for the
+  TTL before the reconcile fetch corrects it). An identical repeated write coalesces into
   the existing entry: an idempotent repeat causes no second document
   transition, so a second entry would wait for a confirmation that never
   comes. A snapshot that just pruned an expired write cannot confirm the

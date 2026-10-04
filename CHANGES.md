@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.13.1
+
+### Fixed
+- **A write the cloud is merely slow to apply is no longer reported as
+  lost.** First production write through 0.13.0 (Europe/Brussels):
+
+  ```
+  12:07:01.823  set_values light.status=1
+  12:07:02.004  sendPoolCommand -> 200; acknowledged write delivered  (light ON)
+  12:07:02.345  snapshot: the pre-write echo, status 0 — overlaid, no flicker
+  12:07:12.005  "pending write for light.status expired unconfirmed; reconciling"
+                -> last raw snapshot re-delivered                     (light OFF)
+  12:07:12.045  reconcile fetch: cloud document still says 0          (OFF)
+  12:07:14.303  the confirming snapshot finally arrives, status 1    (light ON)
+  ```
+
+  The reconciliation absorbed the hard part (the pre-write echo at
+  +340 ms), then produced a 2.3 s false OFF because the confirmation
+  took 12.3 s and the TTL was 10 s — the "5–10 s round trip" the TTL
+  was sized from had never been measured. `PENDING_WRITE_TTL_SECONDS`
+  is now **30 s**, margin above the observed worst case. Trade-off: a
+  write the cloud genuinely lost stays displayed for 30 s instead of 10
+  before the reconcile fetch corrects it (rare, benign); a successful
+  but slow write no longer flickers (common, user-visible).
+
+### Added
+- **Confirmation-latency instrumentation.** Every in-order confirmation
+  logs at DEBUG `<pool>: <path> confirmed N.N s after acknowledgement`
+  (for a pulse's final write, measured from its actual send), and every
+  expiry logs the unconfirmed write's age in the same unit — one grep
+  now shows both sides of the latency distribution, so the TTL can be
+  set from real data rather than folklore.
+
 ## 0.13.0
 
 ### Added
