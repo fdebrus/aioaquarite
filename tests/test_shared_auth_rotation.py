@@ -55,14 +55,14 @@ class _SharedAuth:
     def calculate_sleep_duration(self) -> float:
         return 0.005
 
-    async def get_client(self) -> tuple[object, int]:
+    async def ensure_fresh_token(self) -> int:
         async with self._lock:
             if self._rotate_pending:
                 self._rotate_pending = False
                 self.expiring = False
                 self.token_generation += 1
                 self.rotations += 1
-            return object(), self.token_generation
+            return self.token_generation
 
 
 class _SharedClient:
@@ -127,20 +127,19 @@ def test_concurrent_callers_all_observe_one_rotation() -> None:
 
         with (
             patch("aioaquarite.auth.Credentials"),
-            patch("aioaquarite.auth.FirestoreClient"),
-            patch("aioaquarite.auth.AsyncFirestoreClient"),
+            patch("aioaquarite.auth.AsyncClient"),
         ):
             # Stand the clients up first so _ensure_fresh_clients skips sign-in.
             auth._update_firestore_client()
             before = auth.token_generation
 
             first, second = await asyncio.gather(
-                auth.get_client(), auth.get_client()
+                auth.ensure_fresh_token(), auth.ensure_fresh_token()
             )
 
         assert refreshes == 1, "only one caller should perform the rotation"
-        assert first[1] == second[1], "both callers must read the same generation"
-        assert first[1] != before, "and it must differ from the pre-rotation value"
+        assert first == second, "both callers must read the same generation"
+        assert first != before, "and it must differ from the pre-rotation value"
 
     asyncio.run(_run())
 

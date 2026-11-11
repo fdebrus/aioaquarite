@@ -322,7 +322,7 @@ class AquariteClient:
             CommandError: If the cloud function returns a non-2xx status.
         """
         try:
-            client, _ = await self._auth.get_client()
+            await self._auth.ensure_fresh_token()
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise ConnectionError(f"Auth client refresh failed: {err}") from err
         assert self._auth.tokens is not None
@@ -388,7 +388,7 @@ class AquariteClient:
     async def send_command(self, data: dict[str, Any]) -> None:
         """Send a command to the Hayward cloud REST API."""
         try:
-            client, _ = await self._auth.get_client()
+            await self._auth.ensure_fresh_token()
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise ConnectionError(
                 f"Auth client refresh failed: {err}"

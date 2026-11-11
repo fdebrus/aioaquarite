@@ -63,8 +63,6 @@ def _make_client(collections: dict[str, dict[str, Any]]) -> AquariteClient:
     """Build a client whose auth serves the fake async Firestore client."""
     auth = MagicMock()
     auth.get_async_client = AsyncMock(return_value=_FakeAsyncClient(collections))
-    # The sync accessor must not be reached by the read paths.
-    auth.get_client = AsyncMock(side_effect=AssertionError("sync client used"))
     auth.tokens = {"idToken": "id-token", "localId": LOCAL_ID}
     return AquariteClient(auth)
 
@@ -220,7 +218,6 @@ def test_subscribe_pool_uses_the_async_client_natively() -> None:
         to_thread.assert_not_called()
         assert received and received[0]["light"] == {"status": 1}
         client.auth.get_async_client.assert_awaited()
-        client.auth.get_client.assert_not_called()
 
     asyncio.run(_run())
 

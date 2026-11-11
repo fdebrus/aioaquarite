@@ -83,13 +83,13 @@ class _FakeSession:
 def _make_auth(session: Any, *, with_token: bool = True) -> Any:
     """Build an auth double wrapping a fake session.
 
-    ``get_client()`` is mocked directly (matching how the other
+    ``ensure_fresh_token()`` is mocked directly (matching how the other
     authenticated methods on ``AquariteClient`` are exercised) so tests
     don't need to drive the real sign-in flow.
     """
     auth = MagicMock()
     auth._session = session
-    auth.get_client = AsyncMock(return_value=(MagicMock(), False))
+    auth.ensure_fresh_token = AsyncMock(return_value=0)
     auth.tokens = (
         {"idToken": "fake-id-token", "refreshToken": "rt", "expiresIn": "3600"}
         if with_token
@@ -137,7 +137,7 @@ def test_get_pool_stats_posts_expected_payload_and_returns_decoded() -> None:
 
 def test_get_pool_stats_refreshes_auth_before_request() -> None:
     """get_pool_stats goes through the same auth-refresh path as
-    send_command, get_pools, etc. (await self._auth.get_client()) instead
+    send_command, etc. (await self._auth.ensure_fresh_token()) instead
     of reading self._auth.tokens directly, so a token nearing expiry is
     refreshed transparently instead of sending a stale one."""
 
@@ -149,7 +149,7 @@ def test_get_pool_stats_refreshes_auth_before_request() -> None:
 
         await client.get_pool_stats("pool-uuid-1", "ph", 30)
 
-        auth.get_client.assert_awaited_once()
+        auth.ensure_fresh_token.assert_awaited_once()
 
     asyncio.run(_run())
 

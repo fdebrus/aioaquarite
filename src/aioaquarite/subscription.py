@@ -173,7 +173,7 @@ class _ResilientSubscription(abc.ABC, Generic[T]):
                     _LOGGER.debug(
                         "Token expiring, refreshing (%s)", self._label
                     )
-                _, generation = await auth.get_client()
+                generation = await auth.ensure_fresh_token()
                 if generation != self._token_generation:
                     await self._resubscribe("token refreshed")
                 elif self._watch is None:

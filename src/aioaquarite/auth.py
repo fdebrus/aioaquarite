@@ -10,8 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
-from google.cloud.firestore_v1 import AsyncClient as AsyncFirestoreClient
-from google.cloud.firestore_v1 import Client as FirestoreClient
+from google.cloud.firestore_v1 import AsyncClient
 from google.oauth2.credentials import Credentials
 
 from .const import (
@@ -45,11 +44,7 @@ class AquariteAuth:
         self.tokens: dict[str, Any] | None = None
         self.expiry: datetime.datetime | None = None
         self._credentials: Credentials | None = None
-        # Two Firestore clients share one set of credentials: the async one
-        # serves document reads natively, the synchronous one exists only for
-        # the real-time listener (see AquariteClient.subscribe_pool).
-        self._client: FirestoreClient | None = None
-        self._async_client: AsyncFirestoreClient | None = None
+        self._async_client: AsyncClient | None = None
         self._lock = asyncio.Lock()
         self._cached_user_id_token: str | None = None
         self._cached_user_id: str | None = None
@@ -134,7 +129,7 @@ class AquariteAuth:
             _LOGGER.debug("Token refreshed successfully.")
 
     def _update_firestore_client(self) -> None:
-        """Sync credentials to both Firestore clients."""
+        """Sync credentials to the async Firestore client."""
         assert self.tokens is not None
         self._close_clients()
         self._credentials = Credentials(  # type: ignore[no-untyped-call]
@@ -144,29 +139,23 @@ class AquariteAuth:
             client_id=None,
             client_secret=None,
         )
-        self._client = FirestoreClient(
-            project=FIRESTORE_PROJECT, credentials=self._credentials
-        )
-        self._async_client = AsyncFirestoreClient(
+        self._async_client = AsyncClient(
             project=FIRESTORE_PROJECT, credentials=self._credentials
         )
         self._token_generation += 1
 
     def _close_clients(self) -> None:
-        """Close both Firestore clients, if built.
+        """Close the Firestore client, if built.
 
-        Both ``close()`` methods are synchronous, including the async
-        client's — it shuts down the gRPC channel, it does not await I/O.
+        ``AsyncClient.close()`` is synchronous — it shuts down the gRPC
+        channel, it does not await I/O.
         """
-        if self._client is not None:
-            self._client.close()  # type: ignore[no-untyped-call]
-            self._client = None
         if self._async_client is not None:
             self._async_client.close()  # type: ignore[no-untyped-call]
             self._async_client = None
 
     def close(self) -> None:
-        """Release both Firestore clients.
+        """Release the Firestore client.
 
         The aiohttp session is supplied by the caller and is deliberately
         left alone.
@@ -175,7 +164,7 @@ class AquariteAuth:
 
     @property
     def token_generation(self) -> int:
-        """Counter bumped every time the Firestore clients are replaced.
+        """Counter bumped every time the Firestore client is replaced.
 
         Listeners compare it against the value they captured when they
         subscribed. A counter is readable by every caller; a per-call
@@ -188,7 +177,7 @@ class AquariteAuth:
     async def _ensure_fresh_clients(self) -> int:
         """Authenticate or refresh as needed; return the token generation."""
         async with self._lock:
-            if self._client is None:
+            if self._async_client is None:
                 _LOGGER.debug(
                     "Firestore client not initialized, performing authentication."
                 )
@@ -199,26 +188,18 @@ class AquariteAuth:
 
             return self._token_generation
 
-    async def get_client(self) -> tuple[FirestoreClient, int]:
-        """Get the synchronous Firestore client, refreshing the token if needed.
+    async def ensure_fresh_token(self) -> int:
+        """Authenticate or refresh the token if needed; return the token generation.
 
-        Returns the Firestore client and the current token generation, so a
-        caller holding a long-lived listener can tell that its credentials
-        have been rotated underneath it and resubscribe.
-
-        This client backs the real-time listener only; document reads go
-        through :meth:`get_async_client`.
+        Long-lived listeners compare the returned generation with the one they
+        subscribed under to detect a credential rotation and resubscribe.
         """
-        generation = await self._ensure_fresh_clients()
-        assert self._client is not None
-        return self._client, generation
+        return await self._ensure_fresh_clients()
 
-    async def get_async_client(self) -> AsyncFirestoreClient:
+    async def get_async_client(self) -> AsyncClient:
         """Get the async Firestore client, refreshing the token if needed.
 
-        Used for document reads, which are natively async. Callers holding a
-        listener that must be rebuilt when credentials rotate should use
-        :meth:`get_client` and watch its generation instead.
+        Backs reads, writes and both listen streams.
         """
         await self._ensure_fresh_clients()
         assert self._async_client is not None

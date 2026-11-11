@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aioaquarite"
-version = "0.13.1"
+version = "0.13.2"
 description = "Async Python client for the Hayward Aquarite pool API"
 readme = "README.md"
 license = "MIT"
@@ -13,12 +13,13 @@ authors = [
     {name = "fdebrus"},
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
 
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
 ]
 dependencies = [
