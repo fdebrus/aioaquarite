@@ -863,7 +863,7 @@ def test_resilient_aclose_releases_pending_state() -> None:
             auth.token_generation = 0
             auth.is_token_expiring = MagicMock(return_value=False)
             auth.calculate_sleep_duration = MagicMock(return_value=30.0)
-            auth.get_client = AsyncMock(return_value=(object(), 0))
+            auth.ensure_fresh_token = AsyncMock(return_value=0)
             client = AquariteClient(auth)
             client.send_command = AsyncMock()  # type: ignore[method-assign]
             fetch = AsyncMock(return_value={"light": {"status": 0}})
@@ -895,7 +895,7 @@ def test_resilient_subscription_delivers_through_the_overlay() -> None:
         auth.token_generation = 0
         auth.is_token_expiring = MagicMock(return_value=False)
         auth.calculate_sleep_duration = MagicMock(return_value=30.0)
-        auth.get_client = AsyncMock(return_value=(object(), 0))
+        auth.ensure_fresh_token = AsyncMock(return_value=0)
         client = AquariteClient(auth)
         client.send_command = AsyncMock()  # type: ignore[method-assign]
 

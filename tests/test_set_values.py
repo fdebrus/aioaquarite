@@ -29,7 +29,7 @@ POOL_DATA: dict[str, Any] = {
 def _make_client() -> AquariteClient:
     """Build a client with stubbed auth, seeded pool data, mocked transport."""
     auth = MagicMock()
-    auth.get_client = AsyncMock(return_value=(MagicMock(), False))
+    auth.ensure_fresh_token = AsyncMock(return_value=0)
     auth.tokens = {"idToken": "id-token"}
     client = AquariteClient(auth)
     client.set_pool_data(POOL_ID, json.loads(json.dumps(POOL_DATA)))

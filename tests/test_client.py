@@ -16,12 +16,12 @@ from aioaquarite.exceptions import ConnectionError
 def _make_client(post: Any) -> AquariteClient:
     """Build an AquariteClient whose auth is fully stubbed.
 
-    ``get_client`` returns a dummy client and the session exposes the
-    supplied ``post`` callable; tokens are pre-populated so the header
-    build in ``send_command`` succeeds.
+    ``ensure_fresh_token`` succeeds and the session exposes the supplied
+    ``post`` callable; tokens are pre-populated so the header build in
+    ``send_command`` succeeds.
     """
     auth = MagicMock()
-    auth.get_client = AsyncMock(return_value=(MagicMock(), False))
+    auth.ensure_fresh_token = AsyncMock(return_value=0)
     auth.tokens = {"idToken": "id-token"}
     auth._session = MagicMock()
     auth._session.post = post
@@ -48,7 +48,7 @@ def test_send_command_wraps_timeout() -> None:
 
 def test_send_command_wraps_auth_transport_error() -> None:
     client = _make_client(MagicMock())
-    client._auth.get_client = AsyncMock(
+    client._auth.ensure_fresh_token = AsyncMock(
         side_effect=aiohttp.ClientError("refresh failed")
     )
     with pytest.raises(ConnectionError):

@@ -177,7 +177,7 @@ class _FakeAuth:
     def calculate_sleep_duration(self) -> float:
         return 0.005
 
-    async def get_client(self) -> tuple[object, int]:
+    async def ensure_fresh_token(self) -> int:
         self.get_client_calls += 1
         if self.raise_next is not None:
             err = self.raise_next
@@ -189,7 +189,7 @@ class _FakeAuth:
         if self.refresh_on_next:
             self.refresh_on_next = False
             self.token_generation += 1
-        return object(), self.token_generation
+        return self.token_generation
 
 
 class _FakeClient:

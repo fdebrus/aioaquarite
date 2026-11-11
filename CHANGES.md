@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.13.2
+
+Housekeeping release — no behaviour change. Settles the commitment made
+during the Home Assistant Platinum review of the `vistapool` integration:
+the library no longer builds the synchronous Firestore client nothing has
+used since 0.12.
+
+### Removed
+- The unused synchronous Firestore `Client`. `AquariteAuth` builds and
+  rotates only the async client now, and `AquariteAuth.get_client()` is
+  replaced by `ensure_fresh_token()`, which authenticates or refreshes as
+  needed and returns only the token generation — the part long-lived
+  listeners actually used.
+- The vestigial `Watch` re-export from the package root. It existed for
+  the (now archived) hayward-ha integration, and its import was the last
+  place the library loaded Google's thread-based watch module. Use
+  `AsyncDocumentWatch`.
+
+### Changed
+- Package classifiers now declare `Development Status :: 5 -
+  Production/Stable` and `Programming Language :: Python :: 3.14` (the
+  version Home Assistant runs on). `requires-python` and the
+  dependencies are unchanged.
+
 ## 0.13.1
 
 ### Fixed
