@@ -146,6 +146,7 @@ class PendingWriteReconciler:
         # in-flight manual fetch that observes a bump must yield to the
         # newer state instead of publishing its stale read.
         self.generation = 0
+        self._last_snapshot_at: float | None = None
 
     # ── write-side API (called with the event loop running) ────────────
 
@@ -273,6 +274,15 @@ class PendingWriteReconciler:
         fetch (generation bump) and cancels a pending reconcile fetch or
         retry.
         """
+        now = monotonic()
+        if self._last_snapshot_at is not None:
+            # The controller's reporting cadence, measurable from one grep.
+            _LOGGER.debug(
+                "%s: snapshot %.1f s after the previous one",
+                self._label,
+                now - self._last_snapshot_at,
+            )
+        self._last_snapshot_at = now
         self.generation += 1
         self.cancel_reconcile()
         self._last_raw = deepcopy(data)

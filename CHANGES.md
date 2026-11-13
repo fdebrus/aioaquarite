@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.14.0b1 (pre-release)
+
+A beta for running the experiments listed in PROTOCOL.md on a real
+controller. **Everything here is opt-in; the default behaviour is
+exactly 0.13.2's**, pinned by a test on the default command envelope.
+Do not depend on these names — they may change before 0.14.0.
+
+### Added (experimental)
+- `AquariteClient(auth, write_mode="fragment")`: `set_value` /
+  `set_values` send only the changed fragment through `sendEVOCommand`,
+  as the first-party web client does, instead of the whole branch
+  through `sendPoolCommand`. Values at depth one or two go alone;
+  deeper values go inside their complete second-level object. The
+  write/snapshot reconciliation is unaffected by the route.
+- `change_led_color(pool_id)`: the dedicated `changeLedColor` cloud
+  call, an alternative to `pulse()`.
+- `request_updates(pool_id)`: the `PUP` poke the web client sends when
+  it starts listening.
+
+### Added
+- DEBUG log of the time between consecutive snapshots
+  (`snapshot N.N s after the previous one`), so the controller's
+  reporting cadence — and the effect of `PUP` on it — can be read from
+  the log.
+- When a command is rejected, the response body is logged at DEBUG. It
+  is the only place the cloud function says why.
+
 ## 0.13.2
 
 Housekeeping release — no behaviour change. Settles the commitment made

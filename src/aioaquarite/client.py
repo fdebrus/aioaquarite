@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from copy import deepcopy
-from typing import Any, Callable, MutableMapping
+from typing import Any, Callable, Literal, MutableMapping
 
 import aiohttp
 
@@ -28,8 +28,29 @@ _LOGGER = logging.getLogger(__name__)
 class AquariteClient:
     """Aquarite API client for interacting with the Hayward cloud."""
 
-    def __init__(self, auth: AquariteAuth) -> None:
+    def __init__(
+        self,
+        auth: AquariteAuth,
+        *,
+        write_mode: Literal["branch", "fragment"] = "branch",
+    ) -> None:
+        """Create a client.
+
+        ``write_mode`` selects how ``set_value`` / ``set_values`` reach
+        the cloud:
+
+        * ``"branch"`` (default, unchanged): the whole command branch,
+          rebuilt from the cached document, through ``sendPoolCommand``.
+        * ``"fragment"`` (**experimental**, 0.14 beta): only the changed
+          fragment, through ``sendEVOCommand`` — what the first-party
+          web client has been observed to send. See PROTOCOL.md.
+        """
+        if write_mode not in ("branch", "fragment"):
+            raise ValueError(
+                f"write_mode must be 'branch' or 'fragment', got {write_mode!r}"
+            )
         self._auth = auth
+        self._write_mode: Literal["branch", "fragment"] = write_mode
         self._pool_data: dict[str, dict[str, Any]] = {}
         self._branch_locks: dict[tuple[str, tuple[str, ...]], asyncio.Lock] = {}
         # Write/snapshot reconciliation, one reconciler per pool: pending
@@ -46,6 +67,11 @@ class AquariteClient:
     def auth(self) -> AquariteAuth:
         """Return the auth handler."""
         return self._auth
+
+    @property
+    def write_mode(self) -> Literal["branch", "fragment"]:
+        """How writes reach the cloud: ``"branch"`` or ``"fragment"``."""
+        return self._write_mode
 
     def set_pool_data(self, pool_id: str, data: dict[str, Any]) -> None:
         """Store current pool data (used for building command payloads)."""
@@ -387,6 +413,20 @@ class AquariteClient:
 
     async def send_command(self, data: dict[str, Any]) -> None:
         """Send a command to the Hayward cloud REST API."""
+        # The doubled slash is the URL this route has always been called
+        # with; it is kept byte-for-byte so the default path is unchanged.
+        await self._post_function(
+            "sendPoolCommand", f"{HAYWARD_REST_API}/sendPoolCommand", data
+        )
+
+    async def _call_function(self, name: str, data: dict[str, Any]) -> None:
+        """POST an authenticated JSON body to the cloud function ``name``."""
+        await self._post_function(name, f"{HAYWARD_REST_API}{name}", data)
+
+    async def _post_function(
+        self, name: str, url: str, data: dict[str, Any]
+    ) -> None:
+        """Authenticated POST shared by every command-style cloud function."""
         try:
             await self._auth.ensure_fresh_token()
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
@@ -398,18 +438,26 @@ class AquariteClient:
 
         try:
             async with self._auth._session.post(
-                f"{HAYWARD_REST_API}/sendPoolCommand",
+                url,
                 json=data,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as response:
                 _LOGGER.debug(
-                    "sendPoolCommand operation=%s pool_id=%s -> %s",
+                    "%s operation=%s pool_id=%s -> %s",
+                    name,
                     data.get("operation"),
                     data.get("poolId"),
                     response.status,
                 )
                 if response.status >= 400:
+                    # The body is the only place the cloud function says
+                    # why; keep it for whoever reads the debug log.
+                    try:
+                        body = (await response.text())[:500]
+                    except Exception:  # noqa: BLE001 — diagnostics only
+                        body = ""
+                    _LOGGER.debug("%s failed, response body: %r", name, body)
                     raise CommandError(
                         f"Command failed with status {response.status}"
                     )
@@ -421,6 +469,53 @@ class AquariteClient:
             raise ConnectionError(
                 f"Request timed out: {err}"
             ) from err
+
+    def _gateway(self, pool_id: str) -> Any:
+        """The pool's gateway id (``wifi``), required by every command."""
+        pool_data = self._pool_data.get(pool_id)
+        if not pool_data:
+            raise RuntimeError("Pool data not available; fetch data first.")
+        return pool_data.get("wifi")
+
+    async def request_updates(self, pool_id: str) -> None:
+        """Send the ``PUP`` poke the web client sends when it starts listening.
+
+        **Experimental** (0.14 beta). The first-party web client sends
+        this on subscribe, again 10 and 20 minutes later, and whenever a
+        pool comes back online; it appears to ask the gateway to report
+        promptly for a while. What happens without it is unknown — this
+        method exists to find out. See PROTOCOL.md.
+        """
+        await self.send_command(
+            {
+                "gateway": self._gateway(pool_id),
+                "poolId": pool_id,
+                "operation": "PUP",
+                "operationId": None,
+                "changes": "10",
+                "pool": None,
+                "source": "web",
+            }
+        )
+
+    async def change_led_color(self, pool_id: str) -> None:
+        """Advance the LED fixture to its next colour via ``changeLedColor``.
+
+        **Experimental** (0.14 beta). This is the dedicated cloud call
+        the first-party web client uses, as an alternative to
+        :meth:`pulse`, which power-cycles ``light.status`` from the
+        client side. Nothing is recorded as a pending write: whether and
+        how the document's ``light.status`` moves during the cycle is
+        not yet known. See PROTOCOL.md.
+        """
+        await self._call_function(
+            "changeLedColor",
+            {
+                "gateway": self._gateway(pool_id),
+                "poolId": pool_id,
+                "type": "change",
+            },
+        )
 
     async def set_value(
         self, pool_id: str, value_path: str, value: Any
@@ -482,18 +577,39 @@ class AquariteClient:
             effective["hidro.reduction"] = 1 if enabled else 0
             effective["hidro.disable"] = 1
 
-        for path, value in effective.items():
-            self._set_in_dict(current_config, path, value)
-
-        payload = {
-            "gateway": pool_data.get("wifi"),
-            "poolId": pool_id,
-            "operation": "WRP",
-            "changes": json.dumps(current_config),
-            "source": "web",
-        }
-        _LOGGER.debug("set_values pool_id=%s updates=%s", pool_id, effective)
-        await self.send_command(payload)
+        _LOGGER.debug(
+            "set_values pool_id=%s updates=%s mode=%s",
+            pool_id,
+            effective,
+            self._write_mode,
+        )
+        if self._write_mode == "fragment":
+            await self._call_function(
+                "sendEVOCommand",
+                {
+                    "gateway": pool_data.get("wifi"),
+                    "poolId": pool_id,
+                    "operation": "WRP",
+                    "operationId": None,
+                    "changes": json.dumps(
+                        self._build_fragment(pool_data, effective)
+                    ),
+                    "pool": None,
+                    "source": "web",
+                },
+            )
+        else:
+            for path, value in effective.items():
+                self._set_in_dict(current_config, path, value)
+            await self.send_command(
+                {
+                    "gateway": pool_data.get("wifi"),
+                    "poolId": pool_id,
+                    "operation": "WRP",
+                    "changes": json.dumps(current_config),
+                    "source": "web",
+                }
+            )
 
         # The cloud acknowledged the write: record every written path as
         # pending so snapshots that predate it cannot flicker consumers'
@@ -605,6 +721,36 @@ class AquariteClient:
             reconciler.refresh(value_path)
 
     # ── helpers ──────────────────────────────────────────────
+
+    @classmethod
+    def _build_fragment(
+        cls, pool_data: MutableMapping[str, Any], updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build the smallest fragment the web client has been seen to send.
+
+        A value at depth one or two is sent on its own
+        (``{"main": {"localTime": t}}``). A deeper value is sent inside
+        its complete second-level object, taken from the cached document
+        with the update applied (``{"relays": {"relay1": {…}}}``) — the
+        web client never sends less than that for nested objects, and
+        whether the backend merges below that depth is unknown.
+        """
+        fragment: dict[str, Any] = {}
+        for path, value in updates.items():
+            keys = path.split(".")
+            if len(keys) <= 2:
+                cls._set_in_dict(fragment, path, value)
+                continue
+            top, second = keys[0], keys[1]
+            branch = fragment.setdefault(top, {})
+            if second not in branch:
+                cached = pool_data.get(top)
+                cached_child = cached.get(second) if isinstance(cached, dict) else None
+                branch[second] = (
+                    deepcopy(cached_child) if isinstance(cached_child, dict) else {}
+                )
+            cls._set_in_dict(branch[second], ".".join(keys[2:]), value)
+        return fragment
 
     @staticmethod
     def _branch_signature(path: str) -> tuple[str, ...]:

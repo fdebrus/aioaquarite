@@ -232,6 +232,11 @@ separate product with its own API).
 Each needs a real controller. Ordered by expected value, lowest risk
 first. Record the outcome here and change the level.
 
+Since 0.14.0b1 the first three can be run through the library:
+`AquariteClient(auth, write_mode="fragment")` for 1,
+`change_led_color()` for 2, and `request_updates()` for 3. All three
+are opt-in and experimental.
+
 1. Write `{"light":{"status":1}}` through `sendEVOCommand`. Does a
    partial fragment work, and is the confirmation faster than through
    `sendPoolCommand`? The DEBUG line `confirmed N.N s after

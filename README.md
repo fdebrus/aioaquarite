@@ -285,6 +285,22 @@ except AquariteError:
     ...  # catch-all for anything else in the library
 ```
 
+## Experimental (0.14 beta)
+
+Pre-releases of 0.14 carry opt-in reproductions of what the first-party
+web client sends, for measuring on a real controller. Defaults are
+unchanged. These names may change before 0.14.0:
+
+```python
+client = AquariteClient(auth, write_mode="fragment")  # partial writes via sendEVOCommand
+await client.change_led_color(pool_id)                # dedicated LED colour call
+await client.request_updates(pool_id)                 # the web client's PUP poke
+```
+
+At DEBUG the library logs `confirmed N.N s after acknowledgement` for
+each write and `snapshot N.N s after the previous one` for each push —
+the two numbers these experiments are meant to move.
+
 ## Protocol notes
 
 The cloud service is undocumented. [PROTOCOL.md](PROTOCOL.md) records
