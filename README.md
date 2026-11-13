@@ -285,6 +285,15 @@ except AquariteError:
     ...  # catch-all for anything else in the library
 ```
 
+## Protocol notes
+
+The cloud service is undocumented. [PROTOCOL.md](PROTOCOL.md) records
+what this library knows about it — endpoints, payloads, the Firestore
+data model — with an evidence level for each claim (verified in
+production, observed in the first-party web client, inferred, or
+unknown), the known differences from the first-party client, and the
+experiments still open.
+
 ## Development
 
 ```bash
